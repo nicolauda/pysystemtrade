@@ -111,5 +111,3 @@ capital_multiplier:
 # instruments: ['KR3','US10','MXP','EUROSTX','SP500_micro']
 instruments: ['US10','EUROSTX','SP500_micro','NASDAQ_micro']
 start_date: '2000-01-19'
-
-

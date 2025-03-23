@@ -4,10 +4,11 @@ ib_port: 7497
 ib_idoffset: 100
 broker_account: DU8511856
 
-# MongoDB
-mongo_host: mongodb://localhost:27017/
-mongo_database_name: 'production'
-mongo_port: 27017
+# MongoDB - all parameters are optional - mongo_host can be also just localhost, but the port number can be specified there
+# mongo_host: mongodb://localhost:27017/
+# mongo_database_name: 'production'
+# mongo_port: 27017
 
 # Parquet store
-parquet_store: '/users/nicola/data/parquet'
+# parquet_store: '/users/nicola/data/parquet' # for Windows 
+parquet_store: '/home/nicola/data/parquet' # for Linux
