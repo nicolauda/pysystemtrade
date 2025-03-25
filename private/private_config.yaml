@@ -12,3 +12,6 @@ broker_account: DU8511856
 # Parquet store
 # parquet_store: '/users/nicola/data/parquet' # for Windows 
 parquet_store: '/home/nicola/data/parquet' # for Linux
+
+# CSV Roll Calendar
+csv_roll_calendar_directory: "private.futures.roll_calendars_csv"

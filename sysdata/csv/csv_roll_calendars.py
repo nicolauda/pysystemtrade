@@ -7,8 +7,13 @@ from syscore.fileutils import (
 from syscore.pandas.pdutils import pd_readcsv
 from syscore.constants import arg_not_supplied
 from syslogging.logger import *
+from sysdata.config.configdata import Config
 
-CSV_ROLL_CALENDAR_DIRECTORY = "data.futures.roll_calendars_csv"
+config = Config()
+CSV_ROLL_CALENDAR_DIRECTORY = getattr(
+    config, "csv_roll_calendars_directory", "data.futures.roll_calendars_csv"
+    )
+# CSV_ROLL_CALENDAR_DIRECTORY = "data.futures.roll_calendars_csv" #default value
 DATE_INDEX_NAME = "DATE_TIME"
 
 # NOTE: can't change calendars here - do we need init?
