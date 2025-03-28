@@ -9,10 +9,10 @@ from syscore.constants import arg_not_supplied
 from syslogging.logger import *
 from sysdata.config.configdata import Config
 
-config = Config()
-CSV_ROLL_CALENDAR_DIRECTORY = getattr(
-    config, "csv_roll_calendars_directory", "data.futures.roll_calendars_csv"
-    )
+config = Config.default_config()
+CSV_ROLL_CALENDAR_DIRECTORY = config.get_element_or_default(
+    "csv_roll_calendars_directory", "data.futures.roll_calendars_csv"
+)
 # CSV_ROLL_CALENDAR_DIRECTORY = "data.futures.roll_calendars_csv" #default value
 DATE_INDEX_NAME = "DATE_TIME"
 
