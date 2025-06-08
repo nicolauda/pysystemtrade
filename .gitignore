@@ -4,10 +4,10 @@ __pycache__
 .ipynb_checkpoints
 *.pyc
 *.pyo
+*.pck
 .tox
 dist
 build
-private
 restats
 
 # Coverage reports

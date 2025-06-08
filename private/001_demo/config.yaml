@@ -1,0 +1,113 @@
+#YAML
+#--------------------------
+# 01 - Raw data
+#--------------------------
+
+
+#--------------------------
+# 02 - Trading rules         
+#--------------------------
+trading_rules:
+#   ewmac2_8:
+#      function: systems.provided.rules.ewmac.ewmac
+#      data:
+#          - "rawdata.get_daily_prices"
+#          - "rawdata.daily_returns_volatility"
+#      other_args: 
+#          Lfast: 2
+#          Lslow: 8
+#   ewmac4_16:
+#      function: systems.provided.rules.ewmac.ewmac
+#      data:
+#          - "rawdata.get_daily_prices"
+#          - "rawdata.daily_returns_volatility"
+#      other_args: 
+#          Lfast: 4
+#          Lslow: 16
+#   ewmac8_32:
+#      function: systems.provided.rules.ewmac.ewmac
+#      data:
+#          - "rawdata.get_daily_prices"
+#          - "rawdata.daily_returns_volatility"
+#      other_args: 
+#          Lfast: 8
+#          Lslow: 32
+  ewmac16_64:
+     function: systems.provided.rules.ewmac.ewmac
+     data:
+         - "rawdata.get_daily_prices"
+         - "rawdata.daily_returns_volatility"
+     other_args: 
+         Lfast: 16
+         Lslow: 64
+  ewmac32_128:
+     function: systems.provided.rules.ewmac.ewmac
+     data:
+         - "rawdata.get_daily_prices"
+         - "rawdata.daily_returns_volatility"
+     other_args: 
+         Lfast: 32
+         Lslow: 128
+  ewmac64_256:
+     function: systems.provided.rules.ewmac.ewmac
+     data:
+         - "rawdata.get_daily_prices"
+         - "rawdata.daily_returns_volatility"
+     other_args: 
+         Lfast: 64
+         Lslow: 256
+  carry:
+     function: systems.provided.rules.carry.carry
+     data:
+         - "rawdata.raw_carry"
+     other_args:
+         smooth_days: 90
+
+# -------------------------
+# 03 - Forecast scale and cap
+#--------------------------
+use_forecast_scale_estimates: True
+
+forecast_scalar_estimate:
+   pool_instruments: True
+
+#--------------------------
+# 04 - Forecast combine
+#--------------------------
+use_forecast_weight_estimates: True
+use_forecast_div_mult_estimates: True
+
+rule_variations: ['ewmac16_64','ewmac32_128', 'ewmac64_256', 'carry']
+
+forecast_correlation_estimate:
+   pool_instruments: True
+
+#--------------------------
+# 05 - Position scaling
+#--------------------------
+percentage_vol_target: 30.0
+notional_trading_capital: 50000
+base_currency: "EUR"
+
+#--------------------------
+# Portfolio
+#--------------------------
+use_instrument_weight_estimates: True
+use_instrument_div_mult_estimates: True
+
+#Buffering and position inertia
+buffer_trade_to_edge: True
+buffer_method: forecast
+buffer_size: 0.10
+
+# Capital correction
+capital_multiplier:
+   func: syscore.capital.fixed_capital # options: fixed_capital full_compounding half_compounding
+#    func: syscore.capital.half_compounding
+#    func: syscore.capital.full_compounding
+#
+# Portfolio creation
+# instruments: ['KR3','V2X','MXP',"EUROSTX"]
+# instruments: ['KR3','US10','MXP','EUROSTX','SP500_micro']
+instruments: ['US10','EUROSTX','SP500_micro','NASDAQ_micro']
+start_date: '2000-01-19'
