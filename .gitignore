@@ -9,6 +9,11 @@ __pycache__
 dist
 build
 restats
+# private folder
+/private/*
+!/private/.gitkeep
+!/private/__init__.py
+
 
 # Coverage reports
 .coverage
