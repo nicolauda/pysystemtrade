@@ -4,7 +4,12 @@ from sysdata.csv.csv_futures_contract_prices import ConfigCsvFuturesPrices
 from sysinit.futures.contract_prices_from_split_freq_csv_to_db import (
     init_db_with_split_freq_csv_prices_for_code,
 )
-SYMBOL = "AEX"
+from sysinit.futures.rollcalendars_from_db_prices_to_csv import build_and_write_roll_calendar
+from sysinit.futures.multipleprices_from_db_prices_and_csv_calendars_to_db import (
+    process_multiple_prices_single_instrument
+)
+from sysinit.futures.adjustedprices_from_db_multiple_to_db import process_adjusted_prices_single_instrument
+
 BARCHART_CONFIG = ConfigCsvFuturesPrices(
 
     input_date_index_name="Time",
@@ -15,6 +20,8 @@ BARCHART_CONFIG = ConfigCsvFuturesPrices(
         OPEN="Open", HIGH="High", LOW="Low", FINAL="Close", VOLUME="Volume"
     ),
 )
+instrument_code = input("Enter the futures symbol (e.g., 'BITCOIN'): ")
+calendar_output_datapath = "/home/algotrader/pst/pysystemtrade-private/private/futures/roll_calendars_csv"
 
 # assuming bc-utils config pasted into private
 datapath = resolve_path_and_filename_for_package(
@@ -22,4 +29,15 @@ datapath = resolve_path_and_filename_for_package(
 )
 
 # import prices for a single instrument
-init_db_with_split_freq_csv_prices_for_code(instrument_code=SYMBOL, datapath=datapath, csv_config=BARCHART_CONFIG)
+init_db_with_split_freq_csv_prices_for_code(instrument_code=instrument_code, datapath=datapath, csv_config=BARCHART_CONFIG)
+
+# build and write roll calendar for the instrument
+build_and_write_roll_calendar(instrument_code, output_datapath=calendar_output_datapath)
+_ = input(
+    f"Roll calendar for {instrument_code} written to {calendar_output_datapath}. Press Enter to continue."
+)
+# process multiple prices for a single instrument
+process_multiple_prices_single_instrument(instrument_code=instrument_code)
+
+# process adjusted prices for a single instrument
+process_adjusted_prices_single_instrument(instrument_code=instrument_code)

@@ -1,2 +1,4 @@
+#!/bin/bash
 . ~/.profile
+. $HOME/pst/.venv/bin/activate
 python3 $SCRIPT_PATH/run.py $1
