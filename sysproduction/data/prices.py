@@ -158,7 +158,7 @@ class diagPrices(productionDataLayerGeneric):
         instrument_code: str,
         list_of_contract_date_str: list,
         contracts_to_match=arg_not_supplied,
-    ) -> (datetime.datetime, list):
+    ) -> tuple[datetime.datetime, list]:
         """
         Get a list of matched prices; i.e. from a date when we had both forward and current prices
         If we don't have all the prices, will do the best it can
