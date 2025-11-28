@@ -1558,6 +1558,19 @@ Linux script:
 Called by: `run_daily_fx_and_contract_updates`
 
 
+#### Inspect sampled contracts and data quality
+
+Use `sysproduction/info_on_sampled_contracts.py` to list the currently sampled contracts per instrument and see coverage stats:
+
+```bash
+python sysproduction/info_on_sampled_contracts.py --dashboard-pdf /path/to/reports/sampled_contracts_dashboard.pdf
+```
+
+- Console output shows a clean, text-only block per instrument.
+- The PDF starts with a summary section (text only) covering all instruments, followed by one chart page per instrument with the same contract details overlaid.
+- If `--dashboard-pdf` is omitted, the path falls back to `reporting_directory/sampled_contracts_dashboard.pdf`.
+
+
 ### Update futures contract historical price data (Daily)
 
 This gets historical daily data from IB for all the futures contracts marked to sample in the MongoDB contracts database, and updates the futures prices in Parquet. If update sampled contracts has not yet run, it may not be getting data for all the contracts you need.
