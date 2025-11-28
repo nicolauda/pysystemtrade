@@ -273,7 +273,14 @@ def _calculate_cost_per_turnover(
 
 
 def _turnover_for_asset_and_column(asset_name: str, column_name: str, turnovers: dict):
-    return turnovers[column_name][asset_name]
+    turnovers_for_column = turnovers.get(column_name, {})
+    turnover = turnovers_for_column.get(asset_name, np.nan)
+    if np.isnan(turnover):
+        print(
+            f"No turnover entry for asset:rule combination {asset_name}:{column_name} "
+            "in sysquant.optimisation.pre_processing._turnover_for_asset_and_column"
+        )
+    return turnover
 
 
 def _cost_for_asset_and_column(asset_name: str, column_name: str, dict_of_costs: dict):
