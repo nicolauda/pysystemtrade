@@ -9,6 +9,7 @@ This includes:
 
 Related documents (which you should read before this one!):
 
+- [Backtest-to-production step-by-step](/docs/backtest_to_production_step_by_step.md)
 - [Backtesting with pysystemtrade](/docs/backtesting.md)
 - [Storing futures and spot FX data](/docs/data.md)
 - [Connecting pysystemtrade to interactive brokers](/docs/IB.md)
@@ -273,6 +274,7 @@ You need to:
         - '/home/user_name/data/backups_csv'
         - '/home/user_name/data/backtests'
         - '/home/user_name/data/reports'
+    - (Optional but recommended) If you need fresher shipped CSV data to bootstrap, clone https://github.com/bug-or-feature/pst-csv-data and point the import scripts at its `multiple_prices_csv` and `adjusted_prices_csv` directories.
     - Install the pysystemtrade package, and install or update, any dependencies in directory $PYSYS_CODE (it's possible to put it elsewhere, but you will need to modify the environment variables listed above). If using git clone from your home directory this should create the directory '/home/user_name/pysystemtrade/'
     - [Set up interactive brokers](/docs/IB.md), get a gateway running.
     - [Install MongoDB](https://docs.mongodb.com/manual/administration/install-on-linux/).
