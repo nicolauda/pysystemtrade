@@ -1,6 +1,6 @@
 # Step-by-step: Backtest to Production (Mongo + Parquet)
 
-This recipe assumes a Linux host (matching the provided scripts and crontab), but the flow is portable to other OSes with equivalent scheduling and path tweaks. It shows how to move from a clean checkout to a live-ready stack using MongoDB for state and Parquet for time-series. It bridges the [backtesting guide](/docs/backtesting.md) and the [production manual](/docs/production.md) with a single path that relies on the built-in futures system. Each step links to the main docs so you can dive deeper where needed.
+This recipe assumes a Linux host (matching the provided scripts and crontab), but the flow is portable to other OSes with equivalent scheduling and path tweaks. It shows how to move from a clean checkout to a live-ready stack using MongoDB for state and Parquet for time-series. It bridges the [backtesting guide](/docs/backtesting.md) and the [production manual](/docs/production.md) with a single path that relies on the built-in futures system. Each step links to the main docs so you can dive deeper and includes validation checks so you know if you’re ready to proceed.
 
 Table of Contents
 =================
@@ -41,6 +41,9 @@ Create the corresponding directories, plus a Parquet root (e.g. `/home/you/data/
 See: [Production quick start env vars](/docs/production.md#quick-start-guide) and [Production: data storage](/docs/production.md#data-storage).
 
 On Linux, plan to use `crontab` with the bundled shell wrappers in `sysproduction/linux/scripts` (see [Production: scheduling](/docs/production.md#scheduling)). On other OSes, use an equivalent scheduler and point it at the same commands.
+Validation:
+- `echo $PYSYS_CODE $MONGO_DATA $PYSYS_PRIVATE_CONFIG_DIR` shows sensible paths.
+- `ls $SCRIPT_PATH` lists the cron wrappers; `crontab -l` contains your schedule (Linux).
 
 ## Step 1: Install and set private config
 
@@ -58,6 +61,9 @@ On Linux, plan to use `crontab` with the bundled shell wrappers in `sysproductio
 4. If your private files live outside the repo, export `PYSYS_PRIVATE_CONFIG_DIR` (Step 0) so the code can find `private_config.yaml`.
 5. Keep CSV configuration as shipped (instrument config, roll parameters) unless you have updated copies.
 - See: [System defaults & private config](/docs/production.md#system-defaults--private-config), [Backtesting: project defaults and private configuration](/docs/backtesting.md#project-defaults-and-private-configuration).
+Validation:
+- `python - <<'PY'\nfrom sysdata.config.private_config import get_private_config_as_dict\nprint(get_private_config_as_dict())\nPY` prints the merged private config without missing keys.
+- Directories in `parquet_store`, `backtest_store_directory`, `mongo_dump_directory`, `csv_backup_directory`, `echo_directory` exist and are writable.
 
 ## Step 2: Bring up Mongo and Parquet stores
 
@@ -72,6 +78,9 @@ On Linux, plan to use `crontab` with the bundled shell wrappers in `sysproductio
 3. If you keep private config elsewhere, export `PYSYS_PRIVATE_CONFIG_DIR=/path/to/private`.
 4. At this point the code will be able to resolve Mongo/Parquet locations, but the stores are still empty.
 - See: [Production: data storage](/docs/production.md#data-storage), [Data: storing and representing futures data](/docs/data.md#part-3-storing-and-representing-futures-data).
+Validation:
+- `mongo --host $mongo_host --port $mongo_port --eval "db.stats()"` succeeds.
+- Parquet root exists and is writable: `touch /path/to/pst_parquet/_test && rm /path/to/pst_parquet/_test`.
 
 ## Step 3: Seed data into Mongo/Parquet
 
@@ -115,6 +124,9 @@ Populate Mongo (for spread costs and state) and Parquet (for prices) so backtest
    print(data.data.config.get_element("parquet_store"))
    ```
 - See: [Data: dbFuturesSimData](/docs/data.md#using-dbfuturessimdata), [Data: MongoDB](/docs/data.md#mongodb), [Data: Parquet](/docs/data.md#parquet).
+Validation:
+- Spot FX codes and futures instruments load: `dbFuturesSimData().get_instrument_list()` returns non-empty; pick an instrument and ensure `get_multiple_prices` returns data with recent dates.
+- Spread costs present in Mongo (if applicable): check via `mongo` shell on the relevant collection or use `sysproduction.data.prices.diagPrices().db_spread_cost_data.get_spread_costs()`.
 
 ## Step 4: Run a backtest on DB data
 
@@ -134,10 +146,13 @@ print(system.accounts.portfolio().sharpe())
 
 Backtests will cache into the directories defined by `backtest_store_directory` in defaults/private config.
 - See: [Backtesting: create a futures backtest](/docs/backtesting.md#how-do-icreate-a-standard-futures-backtest), [Backtesting: using pre-baked systems](/docs/backtesting.md#pre-baked-systems), [Data: using dbFuturesSimData](/docs/data.md#using-dbfuturessimdata).
+Validation:
+- `system.accounts.portfolio().stats()` returns sensible values (no NaNs/Infs), and the instrument count matches the data you loaded.
+- Re-run and confirm caches are used (second run faster) and identical outputs.
 
 ## Step 5: System stages and continuous positioning
 
-- System stages (per `basesystem.py` and the [Introduction](/docs/introduction.md)): raw data preprocessing; trading rules -> forecasts; forecast scaling/capping; forecast combination; position sizing; portfolio construction; P&L. These are wired in `systems/basesystem.py` and the pre-baked systems under `systems/provided/...`.
+- Rob’s standard pipeline (see [Introduction](/docs/introduction.md)): preprocess raw data → run trading rules → scale/cap forecasts → combine forecasts → size positions → build the portfolio → compute P&L. Pre-baked systems follow this structure; you typically configure stages via YAML (which rules, caps, scaling, buffers, weights) rather than editing Python.
 - PST uses *continuous* forecasts and positions. Capping (`forecast_cap`) and scaling (`forecast_scalar`, `average_absolute_forecast`) happen before combining forecasts and sizing positions. Positions remain continuous; rounding to tradable lots happens in the execution stack, not in portfolio construction.
 - Buffering and speed limits: use the buffering/inertia settings in position sizing to avoid over-trading; turnover and cost controls work with the caps/scalars to keep forecasts and positions stable.
 - Validate that adjusted prices and roll calendars are correct, since continuous positioning relies on clean stitched series; see [Data: roll calendars](/docs/data.md#roll-calendars) and [Data: creating and storing back adjusted prices](/docs/data.md#creating-and-storing-back-adjusted-prices).
@@ -157,6 +172,10 @@ Backtests will cache into the directories defined by `backtest_store_directory` 
 3. For order-level realism in backtests, use the example order-simulation system (`systems.provided.example.daily_with_order_simulation.futures_system`) with `dbFuturesSimData`.
 4. Iterate: run the snippet from Step 4 pointing `Config` to your private YAML, inspect portfolio stats, and stabilise weights/div multipliers before freezing the config for production.
 - See: [Backtesting: Stage – Forecast combine](/docs/backtesting.md#stage-forecast-combine) (forecast weights/div multiplier), [Backtesting: Stage – Creating portfolios](/docs/backtesting.md#stage-creating-portfolios) (instrument weights/IDM), [Backtesting: Stage – Position scaling](/docs/backtesting.md#stage-position-scaling) (vol target), [Production: finalise your backtest configuration](/docs/production.md#finalise-your-backtest-configuration).
+Validation:
+- Check forecasts are capped and scaled: inspect `system.forecastScaleCap.get_forecast_scaled("EDOLLAR", "ewmac64")` (replace with a rule/instrument you have).
+- Confirm IDM/FDM are as expected: `system.portfolio.get_instrument_diversification_multiplier()` and `system.portfolio.get_forecast_diversification_multiplier()`.
+- Inspect turnover/cost: `system.accounts.portfolio().turnover_summary()` and `system.accounts.portfolio().costs_breakdown()` (or equivalent metrics).
 
 ## Step 7: Promote to production
 
@@ -178,6 +197,10 @@ Keep the same `mongo_db`/`parquet_store` values as in your backtests so live run
 - Before going live, ensure the production `strategy_list` and configs point to the same YAML you validated in Step 6; rerun `run_systems` + `run_strategy_order_generator` after any config change to push the new desired positions.
 - On Linux you can call the ready-made bash wrappers in `sysproduction/linux/scripts` from `cron` (see [Production: scheduling](/docs/production.md#scheduling)) instead of invoking the Python modules directly; the Python commands above remain valid on any OS or when running ad-hoc.
 - See: [Production system data flow](/docs/production.md#production-system-data-flow) and [Core production system components](/docs/production.md#core-production-system-components) for how these scripts fit together; [Production: linking to a broker](/docs/production.md#linking-to-a-broker) and [IB](/docs/IB.md) for connectivity specifics.
+Validation:
+- Run each script once manually and confirm no critical errors in logs/echos.
+- Confirm orders are not sent when in test mode (paper IB or controls set to block live trading).
+- Crontab includes the desired schedule; logs/echos rotate as expected.
 
 ## Step 8: Operate and iterate
 
@@ -186,3 +209,6 @@ Keep the same `mongo_db`/`parquet_store` values as in your backtests so live run
 - When you change strategy configuration, re-run `run_systems` then `run_strategy_order_generator` to push the new desired positions; the stack handler will take it from there.
 - For deeper topics (dashboard, roll calendars, broker specifics) see [production.md](/docs/production.md), [data.md](/docs/data.md), and [IB.md](/docs/IB.md).
 - See: [Production: interactive scripts](/docs/production.md#interactive-scripts), [Production: dashboard and monitor](/docs/dashboard_and_monitor.md), [Data: roll calendars](/docs/data.md#roll-calendars).
+- Validation:
+  - Monitoring shows fresh prices, positions, and no stale processes; dashboards or `interactive_diagnostics` reflect expected state.
+  - Backups complete (Mongo dump and Parquet/CSV backups) and are restorable (spot-check a dump or Parquet file).
