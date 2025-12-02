@@ -11,6 +11,7 @@ Table of Contents
 - [Step 2: Bring up Mongo and Parquet stores](#step-2-bring-up-mongo-and-parquet-stores)
 - [Step 3: Seed data into Mongo/Parquet](#step-3-seed-data-into-mongoparquet)
 - [Step 4: Run a backtest on DB data](#step-4-run-a-backtest-on-db-data)
+- [Classic vs dynamic systems](#classic-vs-dynamic-systems)
 - [Step 5: System stages and continuous positioning](#step-5-system-stages-and-continuous-positioning)
 - [Step 6: Shape a base strategy (weights, multipliers, optimisation)](#step-6-shape-a-base-strategy-weights-multipliers-optimisation)
 - [Step 7: Promote to production](#step-7-promote-to-production)
@@ -149,6 +150,22 @@ Backtests will cache into the directories defined by `backtest_store_directory` 
 Validation:
 - `system.accounts.portfolio().stats()` returns sensible values (no NaNs/Infs), and the instrument count matches the data you loaded.
 - Re-run and confirm caches are used (second run faster) and identical outputs.
+
+## Classic vs dynamic systems
+
+- Classic system (book): Mirrors the "Staunch Systems Trader" in Robert Carver, *Systematic Trading* (2015) stored under `pysystemtrade-private/private/docs`. The shipped config `systems/provided/futures_chapter15/futuresconfig.yaml` uses the same six instruments (Eurodollar, US 5yr, Euro Stoxx, V2X, MXP, Corn), the EWMAC stack plus carry, a 20% vol target, and a forecast cap of 20. Production hooks: `sysproduction/strategy_code/run_system_classic.py`, `sysexecution/strategies/classic_buffered_positions.py`, and `sysproduction/strategy_code/report_system_classic.py`. Use this when you want one-to-one parity with the book before layering extras.
+- Dynamic system (cost-aware): Adds the `optimisedPositions` stage from `systems.provided.dynamic_small_system_optimise` so raw optimal positions (often from the same Chapter 15-style config) are optimised against cost, speed, and constraints. `run_dynamic_optimised_system.py` writes raw optimal positions; `sysexecution/strategies/dynamic_optimised_positions.py` then runs a greedy optimiser using shadow costs, reduce-only/don't-trade overrides, position limits, and speed control to smooth turnover.
+- Researching it: swap in the dynamic pipeline on DB data to see the optimisation effect:
+  ```python
+  from sysdata.sim.db_futures_sim_data import dbFuturesSimData
+  from sysproduction.strategy_code.run_dynamic_optimised_system import dynamic_system
+
+  data = dbFuturesSimData()
+  dyn = dynamic_system(data=data, config_filename="private/my_futuresconfig.yaml")
+  print(dyn.optimisedPositions.get_optimised_weights_df().tail())
+  ```
+  Reuse the same config you validated in Step 4; the optimiser works on the raw optimal positions your backtest produces.
+- Choosing: start with the classic flow to match the book and debug data; move to dynamic when you need tighter cost/turnover control or when you rely on production controls (shadow cost in `private_config.yaml`, reduce-only/don't-trade flags, position limits) to steer orders. Validate by checking that raw and optimised positions land in Mongo/Parquet and that optimisation logs show the expected constraints.
 
 ## Step 5: System stages and continuous positioning
 
