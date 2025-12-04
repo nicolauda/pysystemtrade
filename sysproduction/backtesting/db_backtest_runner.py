@@ -52,12 +52,14 @@ def _infer_default_config_path() -> Optional[Path]:
         return candidate
     return None
 
+
 @dataclass
 class BacktestConfig:
     """
     Configuration for reusing the backtest without rewriting the script when
     inputs/outputs change.
     """
+
     config_path: Optional[Path] = None
     results_dir: Optional[Path] = None
     timestamp: Optional[str] = None
@@ -102,6 +104,7 @@ class BacktestConfig:
             keep_intermediate_figs=self.keep_intermediate_figs,
         )
 
+
 @dataclass
 class BacktestOutputs:
     results_dir: Path
@@ -109,6 +112,7 @@ class BacktestOutputs:
     quantstats_report: Optional[Path]
     pdf_report: Optional[Path]
     debug_report: Optional[Path]
+
 
 @dataclass
 class BacktestResult:
@@ -121,12 +125,14 @@ class BacktestResult:
     trades_rows: list
     outputs: BacktestOutputs
 
+
 def _set_matplotlib_font_defaults():
     """
     Set a safe default font to avoid 'Arial not found' warnings.
     """
     try:
         import matplotlib
+
         matplotlib.rcParams["font.family"] = "DejaVu Sans"
         matplotlib.rcParams["font.sans-serif"] = ["DejaVu Sans", "sans-serif"]
         matplotlib.rcParams["font.serif"] = ["DejaVu Serif", "serif"]
@@ -140,6 +146,7 @@ def _set_matplotlib_font_defaults():
         )
     except Exception:
         pass
+
 
 def _clean_series(series: Any) -> pd.Series:
     """
@@ -168,6 +175,7 @@ def _clean_series(series: Any) -> pd.Series:
     # all zeros: keep the original (no trimming) to avoid empty plots
     return s
 
+
 def _filter_instruments(
     instruments: Iterable[str], desired: Optional[Sequence[str]]
 ) -> list:
@@ -185,6 +193,7 @@ def _filter_instruments(
     if missing:
         print(f"Instruments not found and ignored: {', '.join(missing)}")
     return filtered
+
 
 def run_backtest(
     backtest_config: BacktestConfig,
@@ -208,7 +217,9 @@ def run_backtest(
     all_instruments = list(data.get_instrument_list())
     # Universe precedence: explicit config instruments > weight keys > all from DB
     base_universe = (
-        config_instruments if config_instruments else weights_instruments or all_instruments
+        config_instruments
+        if config_instruments
+        else weights_instruments or all_instruments
     )
 
     instrument_list = _filter_instruments(base_universe, cfg.instrument_filter)
@@ -280,7 +291,9 @@ def run_backtest(
 
         _plot_series(curve, figures["equity"], title="Equity curve")
         _plot_series(drawdown, figures["drawdown"], title="Drawdown")
-        _plot_series(rolling_std, figures["rolling_std"], title="Rolling annualised std")
+        _plot_series(
+            rolling_std, figures["rolling_std"], title="Rolling annualised std"
+        )
         _plot_notional_positions(
             system,
             figures["notional_uncapped"],
@@ -312,9 +325,7 @@ def run_backtest(
     per_rule_rows = sorted(per_rule_rows, key=lambda r: r[0]) if per_rule_rows else []
     cost_rows = _build_spread_cost_rows(spread_costs_used, spread_costs_missing)
 
-    notional_rows = _collect_notional_positions_by_year(
-        system, instruments_for_output
-    )
+    notional_rows = _collect_notional_positions_by_year(system, instruments_for_output)
     trades_rows = _collect_trades(
         system,
         instrument_filter=instruments_for_output,
@@ -332,7 +343,9 @@ def run_backtest(
         results_dir / f"backtest_report_{timestamp}.pdf" if cfg.include_pdf else None
     )
     debug_path = (
-        results_dir / f"backtest_debug_{timestamp}.txt" if cfg.include_debug_txt else None
+        results_dir / f"backtest_debug_{timestamp}.txt"
+        if cfg.include_debug_txt
+        else None
     )
 
     if cfg.include_pdf:
@@ -390,6 +403,7 @@ def run_backtest(
         outputs=outputs,
     )
 
+
 def _print_stats(stats: Any, indent: str = ""):
     """
     Print stats in a readable way whether they are a pandas object or a list of tuples.
@@ -414,6 +428,7 @@ def _print_stats(stats: Any, indent: str = ""):
         # Fallback: print raw object
         print(f"{indent}{stats}")
 
+
 def _safe_tail_print(obj: Any, n: int = 5, indent: str = ""):
     """
     Print tail of a pandas object if available; otherwise print the object.
@@ -426,6 +441,7 @@ def _safe_tail_print(obj: Any, n: int = 5, indent: str = ""):
             pass
     print(f"{indent}{obj}")
 
+
 def _plot_series(series: Any, path: Optional[Path], title: str = ""):
     """
     Save a simple line plot for a pandas-like series if matplotlib is available.
@@ -434,6 +450,7 @@ def _plot_series(series: Any, path: Optional[Path], title: str = ""):
         return
     try:
         import matplotlib.pyplot as plt
+
         _set_matplotlib_font_defaults()
 
         s = _clean_series(series)
@@ -450,6 +467,7 @@ def _plot_series(series: Any, path: Optional[Path], title: str = ""):
     except Exception as err:
         print(f"Plot skipped ({err})")
 
+
 def _quantstats_report(returns: Any, output_path: Optional[Path]):
     """
     Generate a QuantStats HTML report if quantstats is available.
@@ -461,8 +479,8 @@ def _quantstats_report(returns: Any, output_path: Optional[Path]):
     try:
         _set_matplotlib_font_defaults()
         import quantstats as qs
-        qs.extend_pandas()
 
+        qs.extend_pandas()
 
         if not hasattr(returns, "__len__"):
             print("QuantStats skipped (returns is not iterable).")
@@ -504,6 +522,7 @@ def _quantstats_report(returns: Any, output_path: Optional[Path]):
     except Exception as err:
         print(f"QuantStats skipped ({err})")
 
+
 def _ensure_spread_costs(data, instruments, fallback_default: float):
     """
     Ensure spread costs exist; if zero/missing use fallback and patch get_spread_cost to return it.
@@ -538,6 +557,7 @@ def _ensure_spread_costs(data, instruments, fallback_default: float):
 
     return used, sorted(missing)
 
+
 def _plot_notional_positions(
     system, path: Optional[Path], instruments: Optional[Sequence[str]], clip_bounds=None
 ):
@@ -549,6 +569,7 @@ def _plot_notional_positions(
         return
     try:
         import matplotlib.pyplot as plt
+
         _set_matplotlib_font_defaults()
 
         instrs = instruments or system.get_instrument_list()
@@ -561,9 +582,15 @@ def _plot_notional_positions(
             plt.plot(pos.index, pos.values, label=inst)
 
         if clip_bounds:
-            plt.axhline(clip_bounds[0], color="red", linestyle="--", linewidth=0.8, alpha=0.5)
-            plt.axhline(clip_bounds[1], color="red", linestyle="--", linewidth=0.8, alpha=0.5)
-            plt.title(f"Notional positions (capped to [{clip_bounds[0]}, {clip_bounds[1]}])")
+            plt.axhline(
+                clip_bounds[0], color="red", linestyle="--", linewidth=0.8, alpha=0.5
+            )
+            plt.axhline(
+                clip_bounds[1], color="red", linestyle="--", linewidth=0.8, alpha=0.5
+            )
+            plt.title(
+                f"Notional positions (capped to [{clip_bounds[0]}, {clip_bounds[1]}])"
+            )
         else:
             plt.title("Notional positions (uncapped)")
         plt.ylabel("Notional position")
@@ -576,6 +603,7 @@ def _plot_notional_positions(
     except Exception as err:
         print(f"Notional position plot skipped ({err})")
 
+
 def _plot_buffered_positions(
     system, path: Optional[Path], instruments: Optional[Sequence[str]], clip_bounds=None
 ):
@@ -586,6 +614,7 @@ def _plot_buffered_positions(
         return
     try:
         import matplotlib.pyplot as plt
+
         _set_matplotlib_font_defaults()
 
         instrs = instruments or system.get_instrument_list()
@@ -595,12 +624,20 @@ def _plot_buffered_positions(
             pos = _clean_series(pd.Series(pos).astype(float)).sort_index()
             if clip_bounds:
                 pos = pos.clip(lower=clip_bounds[0], upper=clip_bounds[1])
-            plt.step(pos.index, pos.values, where="post", label=inst)  # step to show fills
+            plt.step(
+                pos.index, pos.values, where="post", label=inst
+            )  # step to show fills
 
         if clip_bounds:
-            plt.axhline(clip_bounds[0], color="red", linestyle="--", linewidth=0.8, alpha=0.5)
-            plt.axhline(clip_bounds[1], color="red", linestyle="--", linewidth=0.8, alpha=0.5)
-            plt.title(f"Buffered positions (capped to [{clip_bounds[0]}, {clip_bounds[1]}])")
+            plt.axhline(
+                clip_bounds[0], color="red", linestyle="--", linewidth=0.8, alpha=0.5
+            )
+            plt.axhline(
+                clip_bounds[1], color="red", linestyle="--", linewidth=0.8, alpha=0.5
+            )
+            plt.title(
+                f"Buffered positions (capped to [{clip_bounds[0]}, {clip_bounds[1]}])"
+            )
         else:
             plt.title("Buffered positions (executed, rounded contracts)")
         plt.ylabel("Contracts")
@@ -612,6 +649,7 @@ def _plot_buffered_positions(
         print(f"Saved buffered positions plot: {path}")
     except Exception as err:
         print(f"Buffered position plot skipped ({err})")
+
 
 def _compute_return_stats(returns_pct: pd.Series, periods_per_year: int = 252) -> dict:
     """Return basic perf stats from a series of percent returns."""
@@ -642,6 +680,7 @@ def _compute_return_stats(returns_pct: pd.Series, periods_per_year: int = 252) -
         sharpe=sharpe,
         max_dd=max_dd,
     )
+
 
 def _collect_notional_positions_by_year(
     system, instrument_filter: Optional[Sequence[str]] = None
@@ -676,6 +715,7 @@ def _collect_notional_positions_by_year(
         except Exception:
             continue
     return rows
+
 
 def _collect_trades(
     system,
@@ -764,10 +804,12 @@ def _collect_trades(
 
     return rows
 
+
 def _format_pct(x: float) -> str:
     if x is None or np.isnan(x):
         return "-"
     return f"{100 * x:,.2f}%"
+
 
 def _print_perf_table(title: str, rows: list, verbose: bool = True):
     if not rows:
@@ -777,7 +819,9 @@ def _print_perf_table(title: str, rows: list, verbose: bool = True):
     col_names = ["Name", "Total", "CAGR", "Vol", "Sharpe", "MaxDD"]
     if verbose:
         print(title)
-        print(f"{col_names[0]:<25} {col_names[1]:>12} {col_names[2]:>12} {col_names[3]:>12} {col_names[4]:>8} {col_names[5]:>12}")
+        print(
+            f"{col_names[0]:<25} {col_names[1]:>12} {col_names[2]:>12} {col_names[3]:>12} {col_names[4]:>8} {col_names[5]:>12}"
+        )
     printable = []
     for name, stats in rows:
         row = [
@@ -785,14 +829,19 @@ def _print_perf_table(title: str, rows: list, verbose: bool = True):
             _format_pct(stats.get("total_return", np.nan)),
             _format_pct(stats.get("ann_return", np.nan)),
             _format_pct(stats.get("vol", np.nan)),
-            f"{stats.get('sharpe', np.nan):.2f}" if not np.isnan(stats.get("sharpe", np.nan)) else "-",
+            f"{stats.get('sharpe', np.nan):.2f}"
+            if not np.isnan(stats.get("sharpe", np.nan))
+            else "-",
             _format_pct(stats.get("max_dd", np.nan)),
         ]
         printable.append(row)
         if verbose:
-            print(f"{row[0]:<25} {row[1]:>12} {row[2]:>12} {row[3]:>12} {row[4]:>8} {row[5]:>12}")
+            print(
+                f"{row[0]:<25} {row[1]:>12} {row[2]:>12} {row[3]:>12} {row[4]:>8} {row[5]:>12}"
+            )
 
     return printable
+
 
 def _print_per_instrument_perf(
     portfolio, instrument_filter: Optional[Sequence[str]] = None, verbose: bool = True
@@ -811,6 +860,7 @@ def _print_per_instrument_perf(
         if verbose:
             print(f"Per-instrument stats skipped ({err})")
         return []
+
 
 def _print_per_strategy_perf(system, portfolio, verbose: bool = True):
     try:
@@ -831,6 +881,7 @@ def _print_per_strategy_perf(system, portfolio, verbose: bool = True):
             print(f"Per-strategy stats skipped ({err})")
         return []
 
+
 def _build_spread_cost_rows(used_costs: dict, missing: list) -> list:
     rows = []
     missing_set = set(missing)
@@ -838,6 +889,7 @@ def _build_spread_cost_rows(used_costs: dict, missing: list) -> list:
         source = "fallback" if inst in missing_set else "db"
         rows.append([inst, source, f"{cost:.4f}"])
     return rows
+
 
 def _build_summary_rows(stats: Any, portfolio, base_currency: str = "") -> list:
     """
@@ -853,21 +905,32 @@ def _build_summary_rows(stats: Any, portfolio, base_currency: str = "") -> list:
         first = stats[0]
         if isinstance(first, (list, tuple)):
             try:
-                rows.extend([_format_summary_row(k, v, descriptions, base_currency) for k, v in first])
+                rows.extend(
+                    [
+                        _format_summary_row(k, v, descriptions, base_currency)
+                        for k, v in first
+                    ]
+                )
             except Exception:
                 pass
 
     # dict-like stats (e.g. statsDict)
     if not rows and hasattr(stats, "items"):
         try:
-            rows = [_format_summary_row(k, v, descriptions, base_currency) for k, v in stats.items()]
+            rows = [
+                _format_summary_row(k, v, descriptions, base_currency)
+                for k, v in stats.items()
+            ]
         except Exception:
             rows = []
 
     # final fallback: try dict(...) coercion
     if not rows:
         try:
-            rows = [_format_summary_row(k, v, descriptions, base_currency) for k, v in dict(stats).items()]
+            rows = [
+                _format_summary_row(k, v, descriptions, base_currency)
+                for k, v in dict(stats).items()
+            ]
         except Exception:
             rows = []
 
@@ -887,6 +950,7 @@ def _build_summary_rows(stats: Any, portfolio, base_currency: str = "") -> list:
             pass
 
     return rows
+
 
 def _metric_descriptions() -> dict:
     """
@@ -917,6 +981,7 @@ def _metric_descriptions() -> dict:
         "p_value": "p-value of mean return",
         "max_drawdown": "Maximum drawdown",
     }
+
 
 def _metric_uom(metric: str, base_currency: str) -> str:
     """
@@ -955,6 +1020,7 @@ def _metric_uom(metric: str, base_currency: str) -> str:
         return "/"
     return ""
 
+
 def _format_summary_row(metric, value, descriptions: dict, base_currency: str) -> list:
     return [
         str(metric),
@@ -962,6 +1028,7 @@ def _format_summary_row(metric, value, descriptions: dict, base_currency: str) -
         _metric_uom(str(metric), base_currency),
         descriptions.get(str(metric), ""),
     ]
+
 
 def _format_decimal(value: Any) -> str:
     """
@@ -977,8 +1044,10 @@ def _format_decimal(value: Any) -> str:
     except Exception:
         return str(value)
 
+
 def _add_table_pages(pdf, rows, col_labels, title, rows_per_page=25, col_widths=None):
     import matplotlib.pyplot as plt
+
     _set_matplotlib_font_defaults()
 
     total = len(rows)
@@ -1000,6 +1069,7 @@ def _add_table_pages(pdf, rows, col_labels, title, rows_per_page=25, col_widths=
         table.scale(1, 1.2)
         pdf.savefig(fig, bbox_inches="tight")
         plt.close(fig)
+
 
 def _build_unified_pdf(
     output_path: Path,
@@ -1100,6 +1170,7 @@ def _build_unified_pdf(
     except Exception as err:
         print(f"Unified PDF report skipped ({err})")
 
+
 def _write_debug_txt(
     output_path: Path,
     summary_rows: list,
@@ -1174,6 +1245,7 @@ def _write_debug_txt(
     except Exception as err:
         print(f"Debug text write skipped ({err})")
 
+
 def parse_args(argv=None) -> BacktestConfig:
     parser = argparse.ArgumentParser(
         description="Run a futures backtest using DB data (Mongo + Parquet).",
@@ -1242,6 +1314,7 @@ def parse_args(argv=None) -> BacktestConfig:
         include_debug_txt=not args.no_debug,
         keep_intermediate_figs=args.keep_intermediate_figs,
     )
+
 
 if __name__ == "__main__":
     cli_config = parse_args()
