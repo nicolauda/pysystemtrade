@@ -16,6 +16,7 @@ from sysproduction.data.prices import diagPrices
 
 DEFAULT_DASHBOARD_FILENAME = "sampled_contracts_dashboard.pdf"
 
+
 def _calculate_data_quality(adjusted_prices: pd.Series) -> Optional[dict]:
     """
     Return basic data quality stats for an adjusted price series.
@@ -104,6 +105,63 @@ def _plot_adjusted_prices(
         output_path = plot_dir / f"{instrument_code}_adjusted_prices.png"
         plt.savefig(output_path)
         print(f"Saved adjusted price plot to {output_path}")
+    if pdf_writer is not None:
+        pdf_writer.savefig()
+    if show:
+        plt.show()
+    plt.close()
+
+
+def _plot_all_instruments_scaled(
+    adjusted_by_instrument: dict[str, pd.Series],
+    output_path: Optional[Path],
+    pdf_writer=None,
+    show: bool = False,
+):
+    """
+    Plot all instruments on a single chart after scaling each series by its own max
+    to highlight coverage length rather than level.
+    """
+    if not adjusted_by_instrument:
+        return
+
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print(
+            "matplotlib is required to plot the combined chart. "
+            "Install it or provide --plot-dir to save charts where available."
+        )
+        return
+
+    plt.figure(figsize=(12, 6))
+    ax = plt.gca()
+    for inst, series in adjusted_by_instrument.items():
+        if series is None:
+            continue
+        series = pd.Series(series).dropna()
+        if series.empty:
+            continue
+        max_abs = series.abs().max()
+        if max_abs == 0 or pd.isna(max_abs):
+            continue
+        scaled = series / max_abs
+        scaled.sort_index().plot(ax=ax, label=inst)
+
+    if not ax.lines:
+        plt.close()
+        return
+
+    ax.set_title("Adjusted prices scaled by own max (coverage by instrument)")
+    ax.set_ylabel("Scaled price (max = 1)")
+    ax.set_xlabel("Date")
+    ax.legend(ncol=3, fontsize=8)
+    plt.tight_layout()
+
+    if output_path:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        plt.savefig(output_path)
+        print(f"Saved combined scaled plot to {output_path}")
     if pdf_writer is not None:
         pdf_writer.savefig()
     if show:
@@ -218,6 +276,47 @@ def _add_summary_pages(all_reports: list[list[str]], pdf_writer, lines_per_page:
         plt.close(fig)
 
 
+def _add_sampled_index_pages(collected_reports: list[dict], pdf_writer, lines_per_page: int = 45) -> None:
+    """
+    Add an index page listing instruments and their sampled contracts.
+    """
+    if pdf_writer is None or not collected_reports:
+        return
+
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    lines: list[str] = []
+    for record in collected_reports:
+        contracts = record.get("sampled_contracts") or []
+        contract_str = ", ".join(str(c) for c in contracts) if contracts else "None"
+        lines.append(f"{record['instrument_code']}: {contract_str}")
+
+    for start in range(0, len(lines), lines_per_page):
+        page_lines = lines[start : start + lines_per_page]
+        fig = plt.figure(figsize=(8.5, 11))
+        ax = fig.add_subplot(111)
+        ax.axis("off")
+        ax.text(
+            0.02,
+            0.98,
+            "\n".join(page_lines),
+            va="top",
+            ha="left",
+            fontsize=10,
+            family="monospace",
+        )
+        title = "Sampled contracts index"
+        if len(lines) > lines_per_page:
+            page_num = (start // lines_per_page) + 1
+            title = f"{title} (page {page_num})"
+        fig.suptitle(title, y=0.995, fontsize=12, fontweight="bold")
+        pdf_writer.savefig(fig)
+        plt.close(fig)
+
+
 def _format_contract_report(
     instrument_code: str, sampled_contracts: list, data_quality: Optional[dict]
 ) -> list[str]:
@@ -276,6 +375,7 @@ def list_sampled_contracts(
 
         print("--- Sampled Contracts ---")
         collected_reports = []
+        adjusted_by_instrument: dict[str, pd.Series] = {}
 
         for instrument_code in instrument_list:
             try:
@@ -283,6 +383,7 @@ def list_sampled_contracts(
                     instrument_code
                 )
                 adjusted_prices = diag_prices.get_adjusted_prices(instrument_code)
+                adjusted_by_instrument[instrument_code] = adjusted_prices
                 data_quality = _calculate_data_quality(adjusted_prices)
                 report_lines = _format_contract_report(
                     instrument_code, sampled_contracts, data_quality
@@ -292,6 +393,7 @@ def list_sampled_contracts(
                         "instrument_code": instrument_code,
                         "report_lines": report_lines,
                         "adjusted_prices": adjusted_prices,
+                        "sampled_contracts": sampled_contracts,
                     }
                 )
                 print("\n" + "\n".join(report_lines))
@@ -300,7 +402,18 @@ def list_sampled_contracts(
 
         # Write summary first, then figures
         if pdf_writer is not None:
+            _add_sampled_index_pages(collected_reports, pdf_writer)
             _add_summary_pages([r["report_lines"] for r in collected_reports], pdf_writer)
+
+        # Combined coverage plot across instruments, scaled by own max
+        if pdf_writer is not None or plot_output_dir or plot:
+            combined_plot_path = plot_output_dir / "all_instruments_scaled.png" if plot_output_dir else None
+            _plot_all_instruments_scaled(
+                adjusted_by_instrument,
+                combined_plot_path,
+                pdf_writer=pdf_writer,
+                show=plot,
+            )
 
         for record in collected_reports:
             if plot or plot_output_dir or pdf_writer is not None:

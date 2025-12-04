@@ -91,6 +91,7 @@ Populate Mongo (for spread costs and state) and Parquet (for prices) so backtest
    ```
    python -m sysinit.futures.repocsv_spread_costs
    ```
+   This imports costs from `/data/futures/csvconfig/spreadcosts.csv` into the DB; after that the system reads them from the DB and the auto-update job (sampling/trades) can keep them current.
 2. Load spot FX prices into Parquet:
    ```
    python -m sysinit.futures.repocsv_spotfx_prices

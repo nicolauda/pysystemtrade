@@ -92,7 +92,7 @@ setup(
     package_data=package_data,
     long_description=read("README.md"),
     install_requires=[
-        "pandas==2.1.3",
+        "pandas>=2.2",
         "matplotlib>=3.0.0",
         "ib-insync==0.9.86",
         "PyYAML>=5.3",
@@ -107,6 +107,7 @@ setup(
         "PyPDF2>=2.5.0",
         "pyarrow>=14.0.1",
         "scikit-learn>1.3.0",
+        "quantstats==0.0.77",
     ],
     tests_require=["nose", "flake8"],
     extras_require=dict(),
