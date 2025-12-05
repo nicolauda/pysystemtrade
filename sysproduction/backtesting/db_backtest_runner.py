@@ -323,7 +323,9 @@ def run_backtest(
 
     per_inst_rows = sorted(per_inst_rows, key=lambda r: r[0]) if per_inst_rows else []
     per_rule_rows = sorted(per_rule_rows, key=lambda r: r[0]) if per_rule_rows else []
-    cost_rows = _build_spread_cost_rows(spread_costs_used, spread_costs_missing)
+    cost_rows = _build_spread_cost_rows(
+        spread_costs_used, spread_costs_missing, instruments_for_output
+    )
 
     notional_rows = _collect_notional_positions_by_year(system, instruments_for_output)
     trades_rows = _collect_trades(
@@ -882,12 +884,23 @@ def _print_per_strategy_perf(system, portfolio, verbose: bool = True):
         return []
 
 
-def _build_spread_cost_rows(used_costs: dict, missing: list) -> list:
+def _build_spread_cost_rows(
+    used_costs: dict, missing: list, instruments: Optional[Sequence[str]] = None
+) -> list:
+    """
+    Build spread cost rows limited to the selected instruments (config/CLI),
+    defaulting to all entries in used_costs if no subset is provided.
+    """
     rows = []
     missing_set = set(missing)
-    for inst, cost in used_costs.items():
+    ordered_instruments = list(instruments) if instruments is not None else list(
+        used_costs.keys()
+    )
+    for inst in ordered_instruments:
+        if inst not in used_costs:
+            continue
         source = "fallback" if inst in missing_set else "db"
-        rows.append([inst, source, f"{cost:.4f}"])
+        rows.append([inst, source, f"{used_costs[inst]:.4f}"])
     return rows
 
 
