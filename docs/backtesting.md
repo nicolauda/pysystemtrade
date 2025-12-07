@@ -16,6 +16,8 @@ which wraps `sysproduction.backtesting.db_backtest_runner.run_backtest`.
 - Custom config: `python examples/production/backtest_db.py --config /path/to/your_config.yaml`.
 - Limit instruments (recommended if your DB has extra markets): `--instruments SOFR,US10,EUROSTX,V2X,MXP,CORN`.
 - Output: reports/plots go to `backtest_results/` next to the config (HTML QuantStats, PDF summary, debug txt; PNGs are kept only if `--keep-intermediate-figs`).
+- Cache: add `--cache` to load `backtest_results/<config>_system_cache.pckz` if present, then save the refreshed cache; use `--cache-file` to override the path or `--no-cache-compress` to save an uncompressed `.pck`. If data/config change, rerun without `--cache` (or delete the pickle) to avoid stale results.
+- Estimates export: if your YAML has any `use_*_estimates` flags True, the runner saves a YAML snapshot of the estimated params under `backtest_results/`. Set `BacktestConfig.export_estimates=False` to skip this export.
 - Universe logic: the runner starts from `config.instruments` if present, otherwise from the keys of `instrument_weights`, otherwise all instruments returned by the DB; the `--instruments` flag filters that base universe. In this last case, if `use_instrument_weight_estimates` and `use_instrument_div_mult_estimates` are `false` an error will occur since no weights are presents.
 
 

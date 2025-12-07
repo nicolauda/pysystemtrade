@@ -29,6 +29,11 @@ import pandas as pd
 from sysdata.config.configdata import Config
 from sysdata.sim.db_futures_sim_data import dbFuturesSimData
 from systems.provided.futures_chapter15.basesystem import futures_system
+from systems.diagoutput import systemDiag
+from syscore.fileutils import (
+    get_resolved_pathname,
+    resolve_path_and_filename_for_package,
+)
 
 DEFAULT_FALLBACK_SPREAD = 1.0  # price units if spread missing
 
@@ -53,11 +58,62 @@ def _infer_default_config_path() -> Optional[Path]:
     return None
 
 
+def _resolve_file_path(pathlike: Optional[Path]) -> Optional[Path]:
+    """
+    Resolve a path that may be in dot/relative/absolute format to a Path.
+    """
+    if pathlike is None:
+        return None
+    try:
+        resolved = resolve_path_and_filename_for_package(str(pathlike))
+        return Path(resolved)
+    except Exception:
+        return Path(pathlike).expanduser()
+
+
+def _resolve_dir_path(pathlike: Optional[Path]) -> Optional[Path]:
+    """
+    Resolve a directory path using pysystemtrade's path helpers.
+    """
+    if pathlike is None:
+        return None
+    try:
+        resolved = get_resolved_pathname(str(pathlike))
+        return Path(resolved)
+    except Exception:
+        return Path(pathlike).expanduser()
+
+
 @dataclass
 class BacktestConfig:
     """
     Configuration for reusing the backtest without rewriting the script when
     inputs/outputs change.
+
+    Parameters
+    ----------
+    config_path : Path | None
+        YAML config for the backtest; inferred from <script>_config.yaml when omitted.
+    results_dir : Path | None
+        Output folder; defaults to <config_dir>/backtest_results.
+    timestamp : str | None
+        Tag appended to report filenames; defaults to current datetime.
+    fallback_spread : float
+        Used when DB spread cost is missing or zero.
+    instrument_filter : Sequence[str] | None
+        Restrict instruments; None keeps the configured universe.
+    include_plots / include_quantstats / include_pdf / include_debug_txt : bool
+        Toggle generation of PNGs, QuantStats HTML, unified PDF, and debug txt.
+    keep_intermediate_figs : bool
+        Keep PNGs on disk after PDF creation (otherwise they're deleted).
+    use_cache : bool
+        Load system cache if present, then save refreshed cache at the end.
+    cache_file : Path | None
+        Custom cache pickle path; default: results_dir/<config_stem>_system_cache.pckz.
+    cache_compress : bool
+        Sets system.config.backtest_compress before pickling (compressed .pckz files).
+    export_estimates : bool
+        Save estimated parameters to YAML when estimation flags are enabled.
     """
 
     config_path: Optional[Path] = None
@@ -70,26 +126,36 @@ class BacktestConfig:
     include_pdf: bool = True
     include_debug_txt: bool = True
     keep_intermediate_figs: bool = False
+    use_cache: bool = False
+    cache_file: Optional[Path] = None
+    cache_compress: bool = True
+    export_estimates: bool = True
 
     def with_defaults(self) -> "BacktestConfig":
         inferred = _infer_default_config_path()
         if self.config_path:
-            resolved_config = Path(self.config_path).resolve()
+            resolved_config = _resolve_file_path(self.config_path)
         elif inferred:
-            resolved_config = inferred
+            resolved_config = _resolve_file_path(inferred)
         else:
             raise ValueError(
                 "config_path is required (no <name>_config.yaml inferred). "
                 "Pass BacktestConfig.config_path or --config."
             )
         resolved_results = (
-            Path(self.results_dir)
+            _resolve_dir_path(self.results_dir)
             if self.results_dir is not None
-            else resolved_config.parent / "backtest_results"
+            else _resolve_dir_path(resolved_config.parent / "backtest_results")
         )
         resolved_timestamp = self.timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
         resolved_instruments = (
             tuple(self.instrument_filter) if self.instrument_filter else None
+        )
+        cache_ext = "pckz" if self.cache_compress else "pck"
+        resolved_cache = (
+            _resolve_file_path(self.cache_file)
+            if self.cache_file is not None
+            else resolved_results / f"{resolved_config.stem}_system_cache.{cache_ext}"
         )
         return BacktestConfig(
             config_path=resolved_config,
@@ -102,6 +168,10 @@ class BacktestConfig:
             include_pdf=self.include_pdf,
             include_debug_txt=self.include_debug_txt,
             keep_intermediate_figs=self.keep_intermediate_figs,
+            use_cache=bool(self.use_cache),
+            cache_file=resolved_cache,
+            cache_compress=bool(self.cache_compress),
+            export_estimates=bool(self.export_estimates),
         )
 
 
@@ -112,6 +182,7 @@ class BacktestOutputs:
     quantstats_report: Optional[Path]
     pdf_report: Optional[Path]
     debug_report: Optional[Path]
+    estimates_yaml: Optional[Path]
 
 
 @dataclass
@@ -195,6 +266,50 @@ def _filter_instruments(
     return filtered
 
 
+def _alternate_cache_path(path: Path) -> Optional[Path]:
+    """
+    If the requested cache file is missing, try the opposite compression suffix.
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".pckz":
+        alt = path.with_suffix(".pck")
+    elif suffix == ".pck":
+        alt = path.with_suffix(".pckz")
+    else:
+        return None
+    return alt if alt.exists() else None
+
+
+def _infer_cache_compress(path: Path, default: bool) -> bool:
+    """
+    Derive the compression flag from the cache filename when possible.
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".pckz":
+        return True
+    if suffix == ".pck":
+        return False
+    return default
+
+
+def _estimated_attr_names_from_config(config_obj: Config) -> list:
+    """
+    Return the list of estimated attributes to export based on config flags.
+    """
+    names = []
+    if getattr(config_obj, "use_instrument_weight_estimates", False):
+        names.append("instrument_weights")
+    if getattr(config_obj, "use_instrument_div_mult_estimates", False):
+        names.append("instrument_div_multiplier")
+    if getattr(config_obj, "use_forecast_weight_estimates", False):
+        names.append("forecast_weights")
+    if getattr(config_obj, "use_forecast_div_mult_estimates", False):
+        names.append("forecast_div_multiplier")
+    if getattr(config_obj, "use_forecast_scale_estimates", False):
+        names.append("forecast_scalars")
+    return names
+
+
 def run_backtest(
     backtest_config: BacktestConfig,
     data_factory=dbFuturesSimData,
@@ -206,6 +321,9 @@ def run_backtest(
     the script.
     """
     cfg = backtest_config.with_defaults()
+    logger = logging.getLogger(__name__)
+    results_dir = cfg.results_dir
+    results_dir.mkdir(parents=True, exist_ok=True)
     _set_matplotlib_font_defaults()
     data = data_factory()
 
@@ -232,8 +350,45 @@ def run_backtest(
     )
     system = system_factory(data=data, config=config_obj)
 
-    results_dir = cfg.results_dir
-    results_dir.mkdir(parents=True, exist_ok=True)
+    cache_loaded = False
+    cache_items_loaded = 0
+    cache_path = cfg.cache_file if cfg.use_cache else None
+    if cfg.use_cache and cache_path is not None:
+        effective_path = cache_path if cache_path.exists() else _alternate_cache_path(cache_path)
+        if effective_path is None:
+            msg = f"No cache found at {cache_path}; building results from scratch."
+            print(msg)
+            logger.info(msg)
+        else:
+            try:
+                system.config.backtest_compress = _infer_cache_compress(
+                    effective_path, cfg.cache_compress
+                )
+            except Exception:
+                pass
+            try:
+                system.cache.unpickle(str(effective_path))
+                cache_loaded = True
+                cache_path = effective_path
+                try:
+                    cache_items_loaded = len(system.cache.get_items_with_data())
+                except Exception:
+                    cache_items_loaded = 0
+                msg = (
+                    f"Loaded cached system state from {effective_path} "
+                    f"({cache_items_loaded} cached items)."
+                )
+                print(msg)
+                logger.info(msg)
+            except Exception as err:
+                msg = f"Cache load failed from {effective_path} ({err}); continuing without cache."
+                print(msg)
+                logger.warning(msg)
+    if cfg.use_cache and cache_loaded and cache_items_loaded == 0:
+        msg = "Cache loaded but contained 0 items; computations will run from scratch."
+        print(msg)
+        logger.info(msg)
+
     timestamp = cfg.timestamp
 
     portfolio = system.accounts.portfolio()
@@ -386,13 +541,45 @@ def run_backtest(
         else {}
     )
 
+    estimates_yaml = None
+    estimated_names = _estimated_attr_names_from_config(config_obj)
+    if cfg.export_estimates and estimated_names:
+        estimates_yaml = results_dir / f"{cfg.config_path.stem}_estimated_params_{timestamp}.yaml"
+        try:
+            systemDiag(system).yaml_config_with_estimated_parameters(
+                str(estimates_yaml),
+                attr_names=estimated_names,
+            )
+            print(
+                f"Saved estimated parameters ({', '.join(estimated_names)}) to {estimates_yaml}"
+            )
+        except Exception as err:
+            print(f"Estimated parameters export skipped ({err})")
+            estimates_yaml = None
+
     outputs = BacktestOutputs(
         results_dir=results_dir,
         figures=figures_for_output,
         quantstats_report=qs_html,
         pdf_report=pdf_path,
         debug_report=debug_path,
+        estimates_yaml=estimates_yaml,
     )
+
+    if cfg.use_cache and cache_path is not None:
+        try:
+            try:
+                system.config.backtest_compress = _infer_cache_compress(
+                    cache_path, cfg.cache_compress
+                )
+            except Exception:
+                pass
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            system.cache.pickle(str(cache_path))
+            verb = "Updated" if cache_loaded else "Saved"
+            print(f"{verb} system cache at {cache_path}")
+        except Exception as err:
+            print(f"Cache save skipped ({err})")
 
     return BacktestResult(
         system=system,
@@ -1309,6 +1496,21 @@ def parse_args(argv=None) -> BacktestConfig:
         action="store_true",
         help="Keep PNG figures instead of deleting them after building the PDF.",
     )
+    parser.add_argument(
+        "--cache",
+        action="store_true",
+        help="Load/save the system cache to speed up reruns (default path: backtest_results/<config>_system_cache.pckz).",
+    )
+    parser.add_argument(
+        "--cache-file",
+        default=None,
+        help="Custom path for the system cache pickle.",
+    )
+    parser.add_argument(
+        "--no-cache-compress",
+        action="store_true",
+        help="Disable backtest_compress before pickling (cache files will be larger).",
+    )
 
     args = parser.parse_args(argv)
     instruments = None
@@ -1326,6 +1528,9 @@ def parse_args(argv=None) -> BacktestConfig:
         include_pdf=not args.no_pdf,
         include_debug_txt=not args.no_debug,
         keep_intermediate_figs=args.keep_intermediate_figs,
+        use_cache=args.cache,
+        cache_file=Path(args.cache_file) if args.cache_file else None,
+        cache_compress=not args.no_cache_compress,
     )
 
 
