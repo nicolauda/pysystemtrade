@@ -13,6 +13,7 @@ from sysquant.estimators.estimates import (
     correlationEstimate,
 )
 from sysquant.optimisation.shared import neg_SR
+import numpy as np
 
 ## THIS MIGHT NEED TWEAKING, DEPENDING ON CAPITAL
 
