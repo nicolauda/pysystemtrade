@@ -31,7 +31,6 @@ mongo_dump_directory: 'data.mongo_dump'
 # if mongo_dump_all is True, we dump all databases, otherwise just PST dbs
 mongo_dump_all: True
 echo_directory: 'data.echos'
-sampled_contracts_dashboard_pdf: 'private.sampled_contracts_dashboard.pdf'
 offsystem_backup_options: '-av'
 #
 # Interactive brokers
