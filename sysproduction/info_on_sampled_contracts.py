@@ -169,7 +169,9 @@ def _plot_all_instruments_scaled(
     plt.close()
 
 
-def _resolve_dashboard_pdf_path(config, dashboard_pdf_arg: Optional[str]) -> Optional[Path]:
+def _resolve_dashboard_pdf_path(
+    config, dashboard_pdf_arg: Optional[str]
+) -> Optional[Path]:
     """
     Prefer CLI argument, otherwise fall back to configuration.
     """
@@ -230,12 +232,16 @@ def _add_text_page(instrument_code: str, info_lines: list[str], pdf_writer) -> N
         fontsize=10,
         family="monospace",
     )
-    fig.suptitle(f"{instrument_code} contracts", y=0.995, fontsize=12, fontweight="bold")
+    fig.suptitle(
+        f"{instrument_code} contracts", y=0.995, fontsize=12, fontweight="bold"
+    )
     pdf_writer.savefig(fig)
     plt.close(fig)
 
 
-def _add_summary_pages(all_reports: list[list[str]], pdf_writer, lines_per_page: int = 45) -> None:
+def _add_summary_pages(
+    all_reports: list[list[str]], pdf_writer, lines_per_page: int = 45
+) -> None:
     """
     Add a summary section with all instruments to the start of the PDF.
     """
@@ -276,7 +282,9 @@ def _add_summary_pages(all_reports: list[list[str]], pdf_writer, lines_per_page:
         plt.close(fig)
 
 
-def _add_sampled_index_pages(collected_reports: list[dict], pdf_writer, lines_per_page: int = 45) -> None:
+def _add_sampled_index_pages(
+    collected_reports: list[dict], pdf_writer, lines_per_page: int = 45
+) -> None:
     """
     Add an index page listing instruments and their sampled contracts.
     """
@@ -343,7 +351,9 @@ def _format_contract_report(
 
 
 def list_sampled_contracts(
-    plot: bool = False, plot_dir: Optional[str] = None, dashboard_pdf: Optional[str] = None
+    plot: bool = False,
+    plot_dir: Optional[str] = None,
+    dashboard_pdf: Optional[str] = None,
 ):
     """
     Lists all the sampled contracts for each instrument and reports basic data quality.
@@ -403,11 +413,17 @@ def list_sampled_contracts(
         # Write summary first, then figures
         if pdf_writer is not None:
             _add_sampled_index_pages(collected_reports, pdf_writer)
-            _add_summary_pages([r["report_lines"] for r in collected_reports], pdf_writer)
+            _add_summary_pages(
+                [r["report_lines"] for r in collected_reports], pdf_writer
+            )
 
         # Combined coverage plot across instruments, scaled by own max
         if pdf_writer is not None or plot_output_dir or plot:
-            combined_plot_path = plot_output_dir / "all_instruments_scaled.png" if plot_output_dir else None
+            combined_plot_path = (
+                plot_output_dir / "all_instruments_scaled.png"
+                if plot_output_dir
+                else None
+            )
             _plot_all_instruments_scaled(
                 adjusted_by_instrument,
                 combined_plot_path,

@@ -893,8 +893,8 @@ def _build_spread_cost_rows(
     """
     rows = []
     missing_set = set(missing)
-    ordered_instruments = list(instruments) if instruments is not None else list(
-        used_costs.keys()
+    ordered_instruments = (
+        list(instruments) if instruments is not None else list(used_costs.keys())
     )
     for inst in ordered_instruments:
         if inst not in used_costs:

@@ -90,7 +90,9 @@ def _plot_adjusted_prices(
     plt.close()
 
 
-def _resolve_dashboard_pdf_path(config, dashboard_pdf_arg: Optional[str]) -> Optional[Path]:
+def _resolve_dashboard_pdf_path(
+    config, dashboard_pdf_arg: Optional[str]
+) -> Optional[Path]:
     """
     Prefer CLI argument, otherwise fall back to configuration.
     """
@@ -109,7 +111,9 @@ def _resolve_dashboard_pdf_path(config, dashboard_pdf_arg: Optional[str]) -> Opt
 
 
 def list_sampled_contracts(
-    plot: bool = False, plot_dir: Optional[str] = None, dashboard_pdf: Optional[str] = None
+    plot: bool = False,
+    plot_dir: Optional[str] = None,
+    dashboard_pdf: Optional[str] = None,
 ):
     """
     Lists all the sampled contracts for each instrument and reports basic data quality.
