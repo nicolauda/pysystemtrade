@@ -1,6 +1,7 @@
 import datetime
 from typing import Union, Tuple, List
 
+import numpy as np
 import pandas as pd
 
 from syscore.pandas.full_merge_with_replacement import full_merge_of_existing_series
@@ -271,6 +272,11 @@ def _match_dates_for_labels_when_not_equal_or_mismatch(
         last_true_before_first_false_in_reversed_list_date
     )
     last_date_when_series_mismatch = first_false_in_reversed_list_date
+
+    if isinstance(first_date_after_series_mismatch, np.generic):
+        first_date_after_series_mismatch = first_date_after_series_mismatch.item()
+    if isinstance(last_date_when_series_mismatch, np.generic):
+        last_date_when_series_mismatch = last_date_when_series_mismatch.item()
 
     return first_date_after_series_mismatch, last_date_when_series_mismatch
 
