@@ -96,7 +96,7 @@ def clean_list_of_weights(
     ]
 
     if not any(needs_replacing):
-        return weights
+        return [float(x) for x in weights]
 
     missing_weights = sum(needs_replacing)
 
@@ -136,4 +136,4 @@ def clean_list_of_weights(
     xsum = sum(weights)
     weights = [x / xsum for x in weights]
 
-    return weights
+    return [float(x) for x in weights]
