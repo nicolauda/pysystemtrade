@@ -17,7 +17,9 @@ Prerequisites:
 from pathlib import Path
 from datetime import datetime
 import argparse
+import contextlib
 from dataclasses import dataclass
+import io
 import logging
 import warnings
 import sys
@@ -29,6 +31,11 @@ import pandas as pd
 from sysdata.config.configdata import Config
 from sysdata.sim.db_futures_sim_data import dbFuturesSimData
 from systems.provided.futures_chapter15.basesystem import futures_system
+from systems.diagoutput import systemDiag
+from syscore.fileutils import (
+    get_resolved_pathname,
+    resolve_path_and_filename_for_package,
+)
 
 DEFAULT_FALLBACK_SPREAD = 1.0  # price units if spread missing
 
@@ -53,11 +60,104 @@ def _infer_default_config_path() -> Optional[Path]:
     return None
 
 
+def _resolve_file_path(pathlike: Optional[Path]) -> Optional[Path]:
+    """
+    Resolve a path that may be in dot/relative/absolute format to a Path.
+    """
+    if pathlike is None:
+        return None
+    try:
+        resolved = resolve_path_and_filename_for_package(str(pathlike))
+        return Path(resolved)
+    except Exception:
+        return Path(pathlike).expanduser()
+
+
+def _resolve_dir_path(pathlike: Optional[Path]) -> Optional[Path]:
+    """
+    Resolve a directory path using pysystemtrade's path helpers.
+    """
+    if pathlike is None:
+        return None
+    try:
+        resolved = get_resolved_pathname(str(pathlike))
+        return Path(resolved)
+    except Exception:
+        return Path(pathlike).expanduser()
+
+
+@contextlib.contextmanager
+def _tee_output(log_path: Optional[Path]):
+    """
+    Tee stdout/stderr to the given log_path while still echoing to the terminal.
+    """
+    if log_path is None:
+        yield
+        return
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    class _Tee(io.TextIOBase):
+        def __init__(self, *streams):
+            self.streams = streams
+
+        def write(self, data):
+            for stream in self.streams:
+                try:
+                    stream.write(data)
+                except Exception:
+                    pass
+            try:
+                self.flush()
+            except Exception:
+                pass
+            return len(data)
+
+        def flush(self):
+            for stream in self.streams:
+                try:
+                    stream.flush()
+                except Exception:
+                    pass
+
+    with log_path.open("w", encoding="utf-8") as log_file:
+        tee_out = _Tee(sys.stdout, log_file)
+        tee_err = _Tee(sys.stderr, log_file)
+        with contextlib.redirect_stdout(tee_out), contextlib.redirect_stderr(tee_err):
+            yield
+
+
 @dataclass
 class BacktestConfig:
     """
     Configuration for reusing the backtest without rewriting the script when
     inputs/outputs change.
+
+    Parameters
+    ----------
+    config_path : Path | None
+        YAML config for the backtest; inferred from <script>_config.yaml when omitted.
+    results_dir : Path | None
+        Output folder; defaults to <config_dir>/backtest_results.
+    timestamp : str | None
+        Tag appended to report filenames; defaults to current datetime.
+    fallback_spread : float
+        Used when DB spread cost is missing or zero.
+    instrument_filter : Sequence[str] | None
+        Restrict instruments; None keeps the configured universe.
+    include_plots / include_quantstats / include_pdf / include_report_txt / include_debug_log : bool
+        Toggle generation of PNGs, QuantStats HTML, unified PDF, text summary, and stdout/stderr log.
+        Files are written to results_dir as backtest_report_<ts>.txt / backtest_output_<ts>.log.
+    keep_intermediate_figs : bool
+        Keep PNGs on disk after PDF creation (otherwise they're deleted).
+    use_cache : bool
+        Load system cache if present, then save refreshed cache at the end.
+    cache_file : Path | None
+        Custom cache pickle path; default: results_dir/<config_stem>_system_cache.pckz.
+    cache_compress : bool
+        Sets system.config.backtest_compress before pickling (compressed .pckz files).
+    export_estimates : bool
+        Save estimated parameters to YAML when estimation flags are enabled.
     """
 
     config_path: Optional[Path] = None
@@ -68,28 +168,39 @@ class BacktestConfig:
     include_plots: bool = True
     include_quantstats: bool = True
     include_pdf: bool = True
-    include_debug_txt: bool = True
+    include_report_txt: bool = True
+    include_debug_log: bool = True
     keep_intermediate_figs: bool = False
+    use_cache: bool = False
+    cache_file: Optional[Path] = None
+    cache_compress: bool = True
+    export_estimates: bool = True
 
     def with_defaults(self) -> "BacktestConfig":
         inferred = _infer_default_config_path()
         if self.config_path:
-            resolved_config = Path(self.config_path).resolve()
+            resolved_config = _resolve_file_path(self.config_path)
         elif inferred:
-            resolved_config = inferred
+            resolved_config = _resolve_file_path(inferred)
         else:
             raise ValueError(
                 "config_path is required (no <name>_config.yaml inferred). "
                 "Pass BacktestConfig.config_path or --config."
             )
         resolved_results = (
-            Path(self.results_dir)
+            _resolve_dir_path(self.results_dir)
             if self.results_dir is not None
-            else resolved_config.parent / "backtest_results"
+            else _resolve_dir_path(resolved_config.parent / "backtest_results")
         )
         resolved_timestamp = self.timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
         resolved_instruments = (
             tuple(self.instrument_filter) if self.instrument_filter else None
+        )
+        cache_ext = "pckz" if self.cache_compress else "pck"
+        resolved_cache = (
+            _resolve_file_path(self.cache_file)
+            if self.cache_file is not None
+            else resolved_results / f"{resolved_config.stem}_system_cache.{cache_ext}"
         )
         return BacktestConfig(
             config_path=resolved_config,
@@ -100,8 +211,13 @@ class BacktestConfig:
             include_plots=self.include_plots,
             include_quantstats=self.include_quantstats,
             include_pdf=self.include_pdf,
-            include_debug_txt=self.include_debug_txt,
+            include_report_txt=self.include_report_txt,
+            include_debug_log=self.include_debug_log,
             keep_intermediate_figs=self.keep_intermediate_figs,
+            use_cache=bool(self.use_cache),
+            cache_file=resolved_cache,
+            cache_compress=bool(self.cache_compress),
+            export_estimates=bool(self.export_estimates),
         )
 
 
@@ -111,7 +227,9 @@ class BacktestOutputs:
     figures: dict
     quantstats_report: Optional[Path]
     pdf_report: Optional[Path]
-    debug_report: Optional[Path]
+    report_txt: Optional[Path]
+    debug_log: Optional[Path]
+    estimates_yaml: Optional[Path]
 
 
 @dataclass
@@ -195,6 +313,50 @@ def _filter_instruments(
     return filtered
 
 
+def _alternate_cache_path(path: Path) -> Optional[Path]:
+    """
+    If the requested cache file is missing, try the opposite compression suffix.
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".pckz":
+        alt = path.with_suffix(".pck")
+    elif suffix == ".pck":
+        alt = path.with_suffix(".pckz")
+    else:
+        return None
+    return alt if alt.exists() else None
+
+
+def _infer_cache_compress(path: Path, default: bool) -> bool:
+    """
+    Derive the compression flag from the cache filename when possible.
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".pckz":
+        return True
+    if suffix == ".pck":
+        return False
+    return default
+
+
+def _estimated_attr_names_from_config(config_obj: Config) -> list:
+    """
+    Return the list of estimated attributes to export based on config flags.
+    """
+    names = []
+    if getattr(config_obj, "use_instrument_weight_estimates", False):
+        names.append("instrument_weights")
+    if getattr(config_obj, "use_instrument_div_mult_estimates", False):
+        names.append("instrument_div_multiplier")
+    if getattr(config_obj, "use_forecast_weight_estimates", False):
+        names.append("forecast_weights")
+    if getattr(config_obj, "use_forecast_div_mult_estimates", False):
+        names.append("forecast_div_multiplier")
+    if getattr(config_obj, "use_forecast_scale_estimates", False):
+        names.append("forecast_scalars")
+    return names
+
+
 def run_backtest(
     backtest_config: BacktestConfig,
     data_factory=dbFuturesSimData,
@@ -206,204 +368,301 @@ def run_backtest(
     the script.
     """
     cfg = backtest_config.with_defaults()
-    _set_matplotlib_font_defaults()
-    data = data_factory()
-
-    config_obj = Config(str(cfg.config_path))
-    config_instruments = list(getattr(config_obj, "instruments", []) or [])
-    weights_dict = getattr(config_obj, "instrument_weights", {}) or {}
-    weights_instruments = list(weights_dict.keys())
-
-    all_instruments = list(data.get_instrument_list())
-    # Universe precedence: explicit config instruments > weight keys > all from DB
-    base_universe = (
-        config_instruments
-        if config_instruments
-        else weights_instruments or all_instruments
-    )
-
-    instrument_list = _filter_instruments(base_universe, cfg.instrument_filter)
-    if cfg.instrument_filter and not instrument_list:
-        print("Instrument filter empty: using base instrument universe.")
-        instrument_list = base_universe
-
-    spread_costs_used, spread_costs_missing = _ensure_spread_costs(
-        data, instrument_list, fallback_default=cfg.fallback_spread
-    )
-    system = system_factory(data=data, config=config_obj)
-
+    logger = logging.getLogger(__name__)
     results_dir = cfg.results_dir
-    results_dir.mkdir(parents=True, exist_ok=True)
     timestamp = cfg.timestamp
-
-    portfolio = system.accounts.portfolio()
-    instruments_for_output = instrument_list or system.get_instrument_list()
-
-    print(f"Instruments: {', '.join(instruments_for_output)}")
-    print("\nLatest portfolio stats:")
-    stats = portfolio.stats()
-    _print_stats(stats)
-
-    print(f"\nSharpe: {portfolio.sharpe():.2f}")
-
-    print("\nEquity curve (last 5):")
-    curve = portfolio.curve()
-    _safe_tail_print(curve, 5)
-
-    print("\nDrawdown (last 5):")
-    drawdown = portfolio.drawdown()
-    _safe_tail_print(drawdown, 5)
-
-    print("\nRolling annualised std (last 5):")
-    rolling_std = portfolio.rolling_ann_std()
-    _safe_tail_print(rolling_std, 5)
-
-    print("\nPerformance per instrument (net % returns):")
-    per_inst_rows = _print_per_instrument_perf(
-        portfolio,
-        instrument_filter=instrument_list,
-    )
-
-    print(
-        "\nPerformance per strategy/rule (net % returns, scaled to portfolio capital):"
-    )
-    per_rule_rows = _print_per_strategy_perf(system, portfolio)
-
-    print("\nRecent notional positions per instrument (last 3):")
-    for inst in instruments_for_output:
-        print(f"- {inst}:")
-        _safe_tail_print(system.portfolio.get_notional_position(inst), 3, indent="  ")
-
-    figures = {}
-    if cfg.include_plots:
-        figures["equity"] = results_dir / f"equity_curve_{timestamp}.png"
-        figures["drawdown"] = results_dir / f"drawdown_{timestamp}.png"
-        figures["rolling_std"] = results_dir / f"rolling_ann_std_{timestamp}.png"
-        figures["notional_uncapped"] = (
-            results_dir / f"notional_positions_uncapped_{timestamp}.png"
-        )
-        figures["notional_capped"] = (
-            results_dir / f"notional_positions_capped_{timestamp}.png"
-        )
-        figures["buffered_positions"] = (
-            results_dir / f"buffered_positions_{timestamp}.png"
-        )
-
-        _plot_series(curve, figures["equity"], title="Equity curve")
-        _plot_series(drawdown, figures["drawdown"], title="Drawdown")
-        _plot_series(
-            rolling_std, figures["rolling_std"], title="Rolling annualised std"
-        )
-        _plot_notional_positions(
-            system,
-            figures["notional_uncapped"],
-            instruments_for_output,
-            clip_bounds=None,
-        )
-        _plot_notional_positions(
-            system,
-            figures["notional_capped"],
-            instruments_for_output,
-            clip_bounds=(-20, 20),
-        )
-        _plot_buffered_positions(
-            system,
-            figures["buffered_positions"],
-            instruments_for_output,
-            clip_bounds=None,
-        )
-
-    qs_html = (
-        results_dir / f"backtest_report_qs_{timestamp}.html"
-        if cfg.include_quantstats
-        else None
-    )
-    if cfg.include_quantstats:
-        _quantstats_report(portfolio.percent, qs_html)
-
-    per_inst_rows = sorted(per_inst_rows, key=lambda r: r[0]) if per_inst_rows else []
-    per_rule_rows = sorted(per_rule_rows, key=lambda r: r[0]) if per_rule_rows else []
-    cost_rows = _build_spread_cost_rows(
-        spread_costs_used, spread_costs_missing, instruments_for_output
-    )
-
-    notional_rows = _collect_notional_positions_by_year(system, instruments_for_output)
-    trades_rows = _collect_trades(
-        system,
-        instrument_filter=instruments_for_output,
-        max_rows=200,
-        base_currency=getattr(config_obj, "base_currency", ""),
-    )
-
-    summary_rows = _build_summary_rows(
-        stats,
-        portfolio,
-        base_currency=getattr(config_obj, "base_currency", ""),
-    )
-
-    pdf_path = (
-        results_dir / f"backtest_report_{timestamp}.pdf" if cfg.include_pdf else None
-    )
-    debug_path = (
-        results_dir / f"backtest_debug_{timestamp}.txt"
-        if cfg.include_debug_txt
+    log_path = (
+        results_dir / f"backtest_output_{timestamp}.log"
+        if cfg.include_debug_log
         else None
     )
 
-    if cfg.include_pdf:
-        _build_unified_pdf(
-            output_path=pdf_path,
-            summary_rows=summary_rows,
-            per_inst_rows=per_inst_rows,
-            per_rule_rows=per_rule_rows,
-            cost_rows=cost_rows,
-            notional_rows=notional_rows,
-            trades_rows=trades_rows,
-            figure_paths=list(figures.values()),
+    with _tee_output(log_path):
+        results_dir.mkdir(parents=True, exist_ok=True)
+        _set_matplotlib_font_defaults()
+        data = data_factory()
+
+        config_obj = Config(str(cfg.config_path))
+        config_instruments = list(getattr(config_obj, "instruments", []) or [])
+        weights_dict = getattr(config_obj, "instrument_weights", {}) or {}
+        weights_instruments = list(weights_dict.keys())
+
+        all_instruments = list(data.get_instrument_list())
+        # Universe precedence: explicit config instruments > weight keys > all from DB
+        base_universe = (
+            config_instruments
+            if config_instruments
+            else weights_instruments or all_instruments
         )
 
-    if cfg.include_debug_txt:
-        _write_debug_txt(
-            output_path=debug_path,
-            summary_rows=summary_rows,
-            per_inst_rows=per_inst_rows,
-            per_rule_rows=per_rule_rows,
-            cost_rows=cost_rows,
-            notional_rows=notional_rows,
-            trades_rows=trades_rows,
+        instrument_list = _filter_instruments(base_universe, cfg.instrument_filter)
+        if cfg.instrument_filter and not instrument_list:
+            print("Instrument filter empty: using base instrument universe.")
+            instrument_list = base_universe
+
+        spread_costs_used, spread_costs_missing = _ensure_spread_costs(
+            data, instrument_list, fallback_default=cfg.fallback_spread
+        )
+        system = system_factory(data=data, config=config_obj)
+
+        cache_loaded = False
+        cache_items_loaded = 0
+        cache_path = cfg.cache_file if cfg.use_cache else None
+        if cfg.use_cache and cache_path is not None:
+            effective_path = (
+                cache_path if cache_path.exists() else _alternate_cache_path(cache_path)
+            )
+            if effective_path is None:
+                msg = f"No cache found at {cache_path}; building results from scratch."
+                print(msg)
+                logger.info(msg)
+            else:
+                try:
+                    system.config.backtest_compress = _infer_cache_compress(
+                        effective_path, cfg.cache_compress
+                    )
+                except Exception:
+                    pass
+                try:
+                    system.cache.unpickle(str(effective_path))
+                    cache_loaded = True
+                    cache_path = effective_path
+                    try:
+                        cache_items_loaded = len(system.cache.get_items_with_data())
+                    except Exception:
+                        cache_items_loaded = 0
+                    msg = (
+                        f"Loaded cached system state from {effective_path} "
+                        f"({cache_items_loaded} cached items)."
+                    )
+                    print(msg)
+                    logger.info(msg)
+                except Exception as err:
+                    msg = f"Cache load failed from {effective_path} ({err}); continuing without cache."
+                    print(msg)
+                    logger.warning(msg)
+        if cfg.use_cache and cache_loaded and cache_items_loaded == 0:
+            msg = "Cache loaded but contained 0 items; computations will run from scratch."
+            print(msg)
+            logger.info(msg)
+
+        portfolio = system.accounts.portfolio()
+        instruments_for_output = instrument_list or system.get_instrument_list()
+
+        print(f"Instruments: {', '.join(instruments_for_output)}")
+        print("\nLatest portfolio stats:")
+        stats = portfolio.stats()
+        _print_stats(stats)
+
+        print(f"\nSharpe: {portfolio.sharpe():.2f}")
+
+        print("\nEquity curve (last 5):")
+        curve = portfolio.curve()
+        _safe_tail_print(curve, 5)
+
+        print("\nDrawdown (last 5):")
+        drawdown = portfolio.drawdown()
+        _safe_tail_print(drawdown, 5)
+
+        print("\nRolling annualised std (last 5):")
+        rolling_std = portfolio.rolling_ann_std()
+        _safe_tail_print(rolling_std, 5)
+
+        print("\nPerformance per instrument (net % returns):")
+        per_inst_rows = _print_per_instrument_perf(
+            portfolio,
+            instrument_filter=instrument_list,
         )
 
-    if cfg.include_plots and not cfg.keep_intermediate_figs:
-        for tmp_fig in figures.values():
+        print(
+            "\nPerformance per strategy/rule (net % returns, scaled to portfolio capital):"
+        )
+        per_rule_rows = _print_per_strategy_perf(system, portfolio)
+
+        print("\nRecent notional positions per instrument (last 3):")
+        for inst in instruments_for_output:
+            print(f"- {inst}:")
+            _safe_tail_print(
+                system.portfolio.get_notional_position(inst), 3, indent="  "
+            )
+
+        figures = {}
+        if cfg.include_plots:
+            figures["equity"] = results_dir / f"equity_curve_{timestamp}.png"
+            figures["drawdown"] = results_dir / f"drawdown_{timestamp}.png"
+            figures["rolling_std"] = results_dir / f"rolling_ann_std_{timestamp}.png"
+            figures["notional_uncapped"] = (
+                results_dir / f"notional_positions_uncapped_{timestamp}.png"
+            )
+            figures["notional_capped"] = (
+                results_dir / f"notional_positions_capped_{timestamp}.png"
+            )
+            figures["buffered_positions"] = (
+                results_dir / f"buffered_positions_{timestamp}.png"
+            )
+
+            _plot_series(curve, figures["equity"], title="Equity curve")
+            _plot_series(drawdown, figures["drawdown"], title="Drawdown")
+            _plot_series(
+                rolling_std, figures["rolling_std"], title="Rolling annualised std"
+            )
+            _plot_notional_positions(
+                system,
+                figures["notional_uncapped"],
+                instruments_for_output,
+                clip_bounds=None,
+            )
+            _plot_notional_positions(
+                system,
+                figures["notional_capped"],
+                instruments_for_output,
+                clip_bounds=(-20, 20),
+            )
+            _plot_buffered_positions(
+                system,
+                figures["buffered_positions"],
+                instruments_for_output,
+                clip_bounds=None,
+            )
+
+        qs_html = (
+            results_dir / f"backtest_report_qs_{timestamp}.html"
+            if cfg.include_quantstats
+            else None
+        )
+        if cfg.include_quantstats:
+            _quantstats_report(portfolio.percent, qs_html)
+
+        per_inst_rows = (
+            sorted(per_inst_rows, key=lambda r: r[0]) if per_inst_rows else []
+        )
+        per_rule_rows = (
+            sorted(per_rule_rows, key=lambda r: r[0]) if per_rule_rows else []
+        )
+        cost_rows = _build_spread_cost_rows(
+            spread_costs_used, spread_costs_missing, instruments_for_output
+        )
+
+        notional_rows = _collect_notional_positions_by_year(
+            system, instruments_for_output
+        )
+        trades_rows = _collect_trades(
+            system,
+            instrument_filter=instruments_for_output,
+            max_rows=200,
+            base_currency=getattr(config_obj, "base_currency", ""),
+        )
+
+        summary_rows = _build_summary_rows(
+            stats,
+            portfolio,
+            base_currency=getattr(config_obj, "base_currency", ""),
+        )
+
+        pdf_path = (
+            results_dir / f"backtest_report_{timestamp}.pdf"
+            if cfg.include_pdf
+            else None
+        )
+        report_txt_path = (
+            results_dir / f"backtest_report_{timestamp}.txt"
+            if cfg.include_report_txt
+            else None
+        )
+
+        if cfg.include_pdf:
+            _build_unified_pdf(
+                output_path=pdf_path,
+                summary_rows=summary_rows,
+                per_inst_rows=per_inst_rows,
+                per_rule_rows=per_rule_rows,
+                cost_rows=cost_rows,
+                notional_rows=notional_rows,
+                trades_rows=trades_rows,
+                figure_paths=list(figures.values()),
+            )
+
+        if cfg.include_report_txt:
+            _write_report_txt(
+                output_path=report_txt_path,
+                summary_rows=summary_rows,
+                per_inst_rows=per_inst_rows,
+                per_rule_rows=per_rule_rows,
+                cost_rows=cost_rows,
+                notional_rows=notional_rows,
+                trades_rows=trades_rows,
+            )
+
+        if cfg.include_plots and not cfg.keep_intermediate_figs:
+            for tmp_fig in figures.values():
+                try:
+                    tmp_fig.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        figures_for_output = (
+            {name: path for name, path in figures.items() if path.exists()}
+            if cfg.include_plots
+            else {}
+        )
+
+        estimates_yaml = None
+        estimated_names = _estimated_attr_names_from_config(config_obj)
+        if cfg.export_estimates and estimated_names:
+            estimates_yaml = (
+                results_dir
+                / f"{cfg.config_path.stem}_estimated_params_{timestamp}.yaml"
+            )
             try:
-                tmp_fig.unlink(missing_ok=True)
-            except Exception:
-                pass
+                systemDiag(system).yaml_config_with_estimated_parameters(
+                    str(estimates_yaml),
+                    attr_names=estimated_names,
+                )
+                print(
+                    f"Saved estimated parameters ({', '.join(estimated_names)}) to {estimates_yaml}"
+                )
+            except Exception as err:
+                print(f"Estimated parameters export skipped ({err})")
+                estimates_yaml = None
 
-    figures_for_output = (
-        {name: path for name, path in figures.items() if path.exists()}
-        if cfg.include_plots
-        else {}
-    )
+        outputs = BacktestOutputs(
+            results_dir=results_dir,
+            figures=figures_for_output,
+            quantstats_report=qs_html,
+            pdf_report=pdf_path,
+            report_txt=report_txt_path,
+            debug_log=log_path,
+            estimates_yaml=estimates_yaml,
+        )
 
-    outputs = BacktestOutputs(
-        results_dir=results_dir,
-        figures=figures_for_output,
-        quantstats_report=qs_html,
-        pdf_report=pdf_path,
-        debug_report=debug_path,
-    )
+        if cfg.use_cache and cache_path is not None:
+            try:
+                try:
+                    system.config.backtest_compress = _infer_cache_compress(
+                        cache_path, cfg.cache_compress
+                    )
+                except Exception:
+                    pass
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                system.cache.pickle(str(cache_path))
+                verb = "Updated" if cache_loaded else "Saved"
+                print(f"{verb} system cache at {cache_path}")
+            except Exception as err:
+                print(f"Cache save skipped ({err})")
 
-    return BacktestResult(
-        system=system,
-        summary_rows=summary_rows,
-        per_inst_rows=per_inst_rows,
-        per_rule_rows=per_rule_rows,
-        cost_rows=cost_rows,
-        notional_rows=notional_rows,
-        trades_rows=trades_rows,
-        outputs=outputs,
-    )
+        if log_path is not None:
+            print(f"Saved terminal output log: {log_path}")
+
+        return BacktestResult(
+            system=system,
+            summary_rows=summary_rows,
+            per_inst_rows=per_inst_rows,
+            per_rule_rows=per_rule_rows,
+            cost_rows=cost_rows,
+            notional_rows=notional_rows,
+            trades_rows=trades_rows,
+            outputs=outputs,
+        )
 
 
 def _print_stats(stats: Any, indent: str = ""):
@@ -1184,7 +1443,7 @@ def _build_unified_pdf(
         print(f"Unified PDF report skipped ({err})")
 
 
-def _write_debug_txt(
+def _write_report_txt(
     output_path: Path,
     summary_rows: list,
     per_inst_rows: list,
@@ -1254,9 +1513,9 @@ def _write_debug_txt(
 
     try:
         output_path.write_text("\n".join(sections))
-        print(f"Saved debug summary: {output_path}")
+        print(f"Saved text summary: {output_path}")
     except Exception as err:
-        print(f"Debug text write skipped ({err})")
+        print(f"Text summary write skipped ({err})")
 
 
 def parse_args(argv=None) -> BacktestConfig:
@@ -1302,12 +1561,41 @@ def parse_args(argv=None) -> BacktestConfig:
         "--no-pdf", action="store_true", help="Disable the unified PDF."
     )
     parser.add_argument(
-        "--no-debug", action="store_true", help="Disable the debug txt output."
+        "--no-report",
+        dest="no_report",
+        action="store_true",
+        help="Disable the txt summary output.",
+    )
+    parser.add_argument(
+        "--no-debug",
+        dest="no_report",
+        action="store_true",
+        help="(Deprecated) Alias for --no-report.",
+    )
+    parser.add_argument(
+        "--no-debug-log",
+        action="store_true",
+        help="Disable the terminal output .log file.",
     )
     parser.add_argument(
         "--keep-intermediate-figs",
         action="store_true",
         help="Keep PNG figures instead of deleting them after building the PDF.",
+    )
+    parser.add_argument(
+        "--cache",
+        action="store_true",
+        help="Load/save the system cache to speed up reruns (default path: backtest_results/<config>_system_cache.pckz).",
+    )
+    parser.add_argument(
+        "--cache-file",
+        default=None,
+        help="Custom path for the system cache pickle.",
+    )
+    parser.add_argument(
+        "--no-cache-compress",
+        action="store_true",
+        help="Disable backtest_compress before pickling (cache files will be larger).",
     )
 
     args = parser.parse_args(argv)
@@ -1324,8 +1612,12 @@ def parse_args(argv=None) -> BacktestConfig:
         include_plots=not args.no_plots,
         include_quantstats=not args.no_quantstats,
         include_pdf=not args.no_pdf,
-        include_debug_txt=not args.no_debug,
+        include_report_txt=not args.no_report,
+        include_debug_log=not args.no_debug_log,
         keep_intermediate_figs=args.keep_intermediate_figs,
+        use_cache=args.cache,
+        cache_file=Path(args.cache_file) if args.cache_file else None,
+        cache_compress=not args.no_cache_compress,
     )
 
 
