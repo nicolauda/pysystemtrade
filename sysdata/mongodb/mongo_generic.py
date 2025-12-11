@@ -118,10 +118,12 @@ class mongoDataWithSingleKey(object):
         if not self.key_is_in_data(key):
             raise missingData("%s:%s not in data %s" % (key_name, key, self.name))
 
-        self.collection.remove({key_name: key})
+        # PyMongo 4 removed the deprecated remove(); use delete_one instead
+        self.collection.delete_one({key_name: key})
 
     def delete_data_with_any_warning_for_custom_dict(self, custom_dict: dict):
-        self.collection.remove(custom_dict)
+        # PyMongo 4 removed the deprecated remove(); use delete_many instead
+        self.collection.delete_many(custom_dict)
 
     def add_data(self, key, data_dict: dict, allow_overwrite=False, clean_ints=True):
         if clean_ints:
