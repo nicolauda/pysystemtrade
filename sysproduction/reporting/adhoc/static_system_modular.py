@@ -25,6 +25,7 @@ Notes:
 
 import argparse
 import math
+import os
 from typing import Iterable, List, Sequence, Tuple
 
 from systems.provided.rob_system.run_system import futures_system, System
@@ -71,11 +72,16 @@ def static_system_adhoc_report(
     list_of_capital_and_estimate_instrument_count_tuples: Sequence[
         Tuple[float, int]
     ] = DEFAULT_CAPITAL_AND_INSTRUMENT_COUNT_PAIRS,
+    title_suffix: str = "",
 ):
     """Build the full static selection report."""
     data = dataBlob()
+    base_title = "Static selection of instruments"
+    title_with_suffix = (
+        f"{base_title} {title_suffix}" if title_suffix else base_title
+    )
     report_config = reportConfig(
-        title="Static selection of instruments", function="not_used", output="file"
+        title=title_with_suffix, function="not_used", output="file"
     )
 
     report_results = build_static_selection_report(
@@ -239,7 +245,19 @@ def build_system_function(
                 available = (
                     system.data.db_futures_multiple_prices_data.get_list_of_instruments()
                 )
-                system.config.instrument_weights = {code: 1.0 for code in available}
+                forecast_weights_cfg = getattr(system.config, "forecast_weights", {})
+
+                # Only keep instruments that also have forecast weights defined; otherwise
+                # the forecasting stage will try to use rule names equal to instrument codes.
+                filtered_available = [
+                    code for code in available if code in forecast_weights_cfg
+                ]
+                if not filtered_available:
+                    filtered_available = list(available)
+
+                system.config.instrument_weights = {
+                    code: 1.0 for code in filtered_available
+                }
             except Exception:
                 # If anything goes wrong, fall back to config-defined instruments.
                 pass
@@ -377,6 +395,17 @@ def main():
         use_all_sampled_instruments=args.use_all_sampled_instruments,
     )
 
+    suffix_tokens = []
+    if args.use_db_capital:
+        suffix_tokens.append("use_db_capital")
+    if args.use_all_sampled_instruments:
+        suffix_tokens.append("all_sampled_instruments")
+    if args.config and args.config != DEFAULT_CONFIG_FILENAME:
+        suffix_tokens.append(f"config_{os.path.basename(args.config)}")
+    title_suffix = ""
+    if suffix_tokens:
+        title_suffix = "_".join(suffix_tokens) + "_report"
+
     capitals = args.capital
     if args.use_db_capital and not capitals:
         capitals = [get_current_capital_from_db()]
@@ -391,6 +420,7 @@ def main():
         static_system_adhoc_report(
             system_function=system_function,
             list_of_capital_and_estimate_instrument_count_tuples=capital_and_estimate_pairs,
+            title_suffix=title_suffix,
         )
         return
 

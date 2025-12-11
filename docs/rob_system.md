@@ -1,6 +1,6 @@
 # Base system vs Rob system — an in-depth tour
 
-This chapter is written as a book-style walkthrough of two reference pipelines shipped with `pysystemtrade`:
+This chapter is written as a step-by-step walkthrough of two reference pipelines shipped with `pysystemtrade`:
 
 - **Base system** — the minimal, teaching-oriented stack from *Systematic Trading* (Chapter 15): `systems.provided.futures_chapter15.basesystem.futures_system` with `futuresconfig.yaml`.
 - **Rob system** — the production-grade stack: `systems.provided.rob_system.run_system.futures_system` with `config.yaml`.
@@ -20,6 +20,39 @@ Stages compose into a directed acyclic graph; caching avoids recomputation when 
 - **Rob stack (production path):** `risk`, `accounts` (custom), `optimisedPositions`, `portfolio`, `positionSize`, `rawdata` (custom), `combForecast`, `forecastScaleCap` (vol-attenuated), `rules`.
 
 The extra stages in the rob system deliver production needs: richer signals, volatility-aware scaling, cost-aware optimisation, and explicit risk checks.
+
+### Quick code map (rob system pipeline)
+
+```python
+# systems/provided/rob_system/run_system.py
+from systems.provided.rob_system.rawdata import myFuturesRawData
+from systems.provided.attenuate_vol.vol_attenuation_forecast_scale_cap import volAttenForecastScaleCap
+from systems.provided.dynamic_small_system_optimise.optimised_positions_stage import optimisedPositions
+from systems.provided.dynamic_small_system_optimise.accounts_stage import accountForOptimisedStage
+
+def futures_system(sim_data=arg_not_supplied, config_filename="systems.provided.rob_system.config.yaml", rules=arg_not_supplied):
+    if sim_data is arg_not_supplied:
+        sim_data = dbFuturesSimData()
+    config = Config(config_filename)
+    rules = Rules() if rules is arg_not_supplied else rules
+    return System(
+        [
+            Risk(),
+            accountForOptimisedStage(),
+            optimisedPositions(),
+            Portfolios(),
+            PositionSizing(),
+            myFuturesRawData(),
+            ForecastCombine(),
+            volAttenForecastScaleCap(),
+            rules,
+        ],
+        sim_data,
+        config,
+    )
+```
+
+Reading top-to-bottom mirrors the execution: rawdata → rules → vol attenuation/scale → combine → portfolio → size → optimise → accounts/risk.
 
 ## 1bis) How rob stages talk to each other (data flow and calculations)
 
@@ -77,11 +110,11 @@ Caching ensures repeated queries (e.g., risk and accounts both asking for per-co
 **Key concepts (used throughout):**
 - **Forecast**: directional score in annualised SR units.
 - **Scaling & cap**: apply `forecast_scalar`, then cap to ±20 to keep SR units bounded.
-- **Diversification multipliers**: discount correlated bets intra-rule and across instruments (see blog “Correlations, weights and multipliers”, 2016).
+- **Diversification multipliers**: discount correlated bets intra-rule and across instruments (see blog [“Correlations, weights and multipliers”](https://qoppac.blogspot.com/2016/01/correlations-weights-multipliers.html), 2016).
 - **Vol target**: annualised risk budget for sizing.
-- **Buffering**: hysteresis to cut turnover (related to blog “Diversification and small account size”, 2016).
-- **Risk overlay**: post-portfolio constraints on risk and leverage (see “Capital correction”, 2016).
-- **Optimisation**: cost-aware smoothing of positions (see “Optimising weights with costs”, 2016).
+- **Buffering**: hysteresis to cut turnover (related to blog [“Diversification and small account size”](https://qoppac.blogspot.com/2016/03/diversification-and-small-account-size.html), 2016).
+- **Risk overlay**: post-portfolio constraints on risk and leverage (see [“Capital correction”](https://qoppac.blogspot.com/2016/06/capital-correction-pysystemtrade.html), 2016).
+- **Optimisation**: cost-aware smoothing of positions (see [“Optimising weights with costs”](https://qoppac.blogspot.com/2016/05/optimising-weights-with-costs.html), 2016).
 
 ## 3) Signal layer — trading rules
 
@@ -104,20 +137,66 @@ Caching ensures repeated queries (e.g., risk and accounts both asking for per-co
 
 **Why the breadth?** The production stack follows the “many small, weakly correlated edges” principle in the book and blog: mix trend horizons, cross-sectional effects, carry, and simple factors to smooth returns.
 
+### Example: defining a rule in config
+
+```yaml
+# systems/provided/rob_system/config.yaml
+trading_rules:
+  breakout80:
+     function: systems.provided.rules.breakout.breakout
+     data:
+         - "rawdata.get_daily_prices"
+     other_args:
+       lookback: 80
+```
+
+This asks the rules stage to call `breakout` on daily prices with an 80-day lookback; the forecast scalar for `breakout80` is applied downstream in scaling.
+
 ## 4) Forecast scaling, capping, and volatility attenuation
 
 - **Base**: `ForecastScaleCap` multiplies by `forecast_scalar`, then caps to ±20. No conditioning on volatility.
-- **Rob**: `volAttenForecastScaleCap` adds volatility-aware attenuation:
+- **Rob**: `volAttenForecastScaleCap` adds volatility-aware attenuation (related to the buffering/forecast mapping ideas in [“Diversification and small account size”](https://qoppac.blogspot.com/2016/03/diversification-and-small-account-size.html)):
   1) compute daily vol; 2) compute a 10-year rolling mean; 3) normalise vol and convert to a quantile; 4) apply `2 - 1.5 * quantile` (smoothed) to rules in `use_attenuation`; 5) scale and cap.
 
-Effect: when an instrument is unusually volatile, forecasts shrink before combination, keeping SR units comparable across regimes (a theme in Rob’s scaling posts).
+Effect: when an instrument is unusually volatile, forecasts shrink before combination, keeping SR units comparable across regimes (a theme in Rob’s scaling posts on keeping SR units meaningful when volatility shifts).
+
+### Code path (attenuation)
+
+```python
+# systems/provided/attenuate_vol/vol_attenuation_forecast_scale_cap.py
+@diagnostic()
+def get_vol_attenuation(self, instrument_code):
+    normalised_vol_q = self.get_vol_quantile_points(instrument_code)
+    vol_attenuation = normalised_vol_q.apply(multiplier_function)  # 2 - 1.5 * quantile
+    return vol_attenuation.ewm(span=10).mean()
+```
+
+Only rules listed in `use_attenuation` are multiplied by this factor before capping to ±20.
 
 ## 5) Combining forecasts
 
-- **Base**: global weights for all instruments (carry 50%; trend buckets 50%). `forecast_div_multiplier 1.31` discounts correlated trend rules (see “Correlations, weights and multipliers”, 2016).
+- **Base**: global weights for all instruments (carry 50%; trend buckets 50%). `forecast_div_multiplier 1.31` discounts correlated trend rules (see [“Correlations, weights and multipliers”](https://qoppac.blogspot.com/2016/01/correlations-weights-multipliers.html), 2016).
 - **Rob**: per-instrument weights (`forecast_weights` is a large dict by instrument). `instrument_div_multiplier 2.75` with estimation turned on to reflect realised inter-instrument correlation. Forecast cap stays at 20; forecast/div estimation flags are off, so weights are hand-crafted.
 
 Effect: different markets lean on different styles (e.g., more carry in rates, more breakout in equities), while correlated instruments are penalised more aggressively.
+
+### Example: per-instrument weights
+
+```yaml
+# systems/provided/rob_system/config.yaml
+forecast_weights:
+  AEX:
+    breakout10: 0.01
+    breakout160: 0.05
+    carry10: 0.025
+    momentum32: 0.03
+    normmom8: 0.02
+    relcarry: 0.05
+    skewabs180: 0.025
+    # ... more rules per instrument
+```
+
+The combine stage multiplies each scaled forecast by its weight and sums to one combined forecast per instrument, then applies diversification multipliers.
 
 ## 6) Raw data layer
 
@@ -129,12 +208,46 @@ Effect: different markets lean on different styles (e.g., more carry in rates, m
 
 These additional series feed the skew/factor rules and cross-sectional signals. They reflect the factor-style overlays Rob has discussed for broadening signal diversity.
 
+### Example: factor de-meaning
+
+```python
+# systems/provided/rob_system/rawdata.py
+@output()
+def get_demeanded_factor_value(
+    self,
+    instrument_code,
+    factor_name="skew",
+    demean_method="average_factor_value_in_asset_class_for_instrument",
+    **kwargs,
+):
+    demean_value = getattr(self, demean_method)(
+        instrument_code, factor_name=factor_name, **kwargs
+    )
+    factor_value = self.get_factor_value_for_instrument(
+        instrument_code, factor_name=factor_name, **kwargs
+    )
+    return factor_value - demean_value
+```
+
+Skew-based rules consume this demeaned factor; the demean method controls whether the benchmark is the asset class, the entire universe, or instrument history.
+
 ## 7) Position sizing and buffering
 
 - **Base**: `PositionSizing` with `percentage_vol_target 20%`, `notional_trading_capital 250k`, default buffering (`buffer_method: forecast`, `buffer_size: 0.10`, `buffer_trade_to_edge: True`). Output goes straight to accounts.
 - **Rob**: same stage, but `percentage_vol_target 25%`, `notional_trading_capital 500k`. Output feeds the optimisation stage.
 
-Mechanics: position size is proportional to forecast, inverse vol, and instrument weight; buffering delays trades until the forecast moves beyond the buffer, reducing churn (related to the “Diversification and small account size” blog, 2016).
+Mechanics: position size is proportional to forecast, inverse vol, and instrument weight; buffering delays trades until the forecast moves beyond the buffer, reducing churn (related to the [“Diversification and small account size”](https://qoppac.blogspot.com/2016/03/diversification-and-small-account-size.html) blog, 2016).
+
+### Pseudocode: from forecast to contracts
+
+```python
+desired_risk = combined_forecast * instrument_weight / instrument_vol
+contract_value = per_contract_risk(instrument_code)  # vol-adjusted notional
+contracts_raw = (desired_risk * capital) / contract_value
+contracts_buffered = apply_buffer(contracts_raw, buffer_size=0.10)  # hysteresis
+```
+
+The optimiser (next stage) receives `contracts_buffered` as its starting point.
 
 ## 8) Portfolio construction and risk overlay
 
@@ -146,13 +259,25 @@ Mechanics: position size is proportional to forecast, inverse vol, and instrumen
   - `max_risk_leverage: 20.0`
   Correlations come from `instrument_returns_correlation` (EW 75 weeks, clipped at 0.99).
 
-Effect: the rob system can block portfolios that exceed risk or leverage limits before execution, echoing the “capital correction” and overlay guidance on the blog.
+Effect: the rob system can block portfolios that exceed risk or leverage limits before execution, echoing the [“capital correction”](https://qoppac.blogspot.com/2016/06/capital-correction-pysystemtrade.html) and overlay guidance on the blog.
+
+### Overlay parameters (config excerpt)
+
+```yaml
+risk_overlay:
+  max_risk_fraction_normal_risk: 1.75
+  max_risk_fraction_stdev_risk: 4.0
+  max_risk_limit_sum_abs_risk: 4.0
+  max_risk_leverage: 20.0
+```
+
+If any limit is breached, risk is clipped/downscaled before orders are sent.
 
 ## 9) Optimisation stage (rob only)
 
 Stage: `optimisedPositions` (`systems/provided/dynamic_small_system_optimise/optimised_positions_stage.py`).
 
-Purpose: make raw optimal positions tradable for small/medium capital by accounting for costs, constraints, and speed limits. This is the practical implementation of the “Optimising weights with costs” ideas (2016).
+Purpose: make raw optimal positions tradable for small/medium capital by accounting for costs, constraints, and speed limits. This is the practical implementation of the [“Optimising weights with costs”](https://qoppac.blogspot.com/2016/05/optimising-weights-with-costs.html) ideas (2016).
 
 Inputs: covariance matrix, per-contract value, raw optimal contracts, cost per contract (deflated), constraints (reduce-only / long-only), speed control (`shadow_cost`, `tracking_error_buffer`).
 
@@ -165,6 +290,23 @@ Key parameters (`small_system` in `sysdata/config/defaults.yaml`):
 - `shrink_instrument_returns_correlation: 0.5`
 
 Outcome: lower turnover, fewer trades in expensive/illiquid markets, and adherence to operational constraints.
+
+### Optimiser sketch
+
+```python
+# systems/provided/dynamic_small_system_optimise/optimised_positions_stage.py
+def get_optimal_positions_with_fixed_contract_values(
+    self, relevant_date=arg_not_supplied, previous_positions=arg_not_supplied, maximum_positions=arg_not_supplied
+):
+    obj = self._get_optimal_positions_objective_instance(
+        relevant_date=relevant_date,
+        previous_positions=previous_positions,
+        maximum_positions=maximum_positions,
+    )
+    return obj.optimise_positions()  # greedy search balances tracking error vs cost
+```
+
+The objective includes covariance, per-contract value, cost deflators, constraints (reduce-only/long-only), and speed control (`shadow_cost`, `tracking_error_buffer`).
 
 ## 10) Accounts and P&L
 
@@ -212,4 +354,4 @@ These choices match the capital-sizing guidance in *Systematic Trading* and the 
 - Use the **base system** to learn stage APIs and the classic trend+carry flow.
 - Use the **rob system** for anything production-like: volatility attenuation, cost-aware optimisation, and overlays matter.
 - When extending from the book: add vol attenuation, cross-sectional signals, per-instrument weights, then optimisation. Cross-check the blog series on correlations, small accounts, and cost-aware optimisation for the rationale.
-- Keep data hygiene tight (prices, costs, FX). Missing data triggers pruning in static reports and changes correlations/diversification multipliers. Rob’s blog posts on adding instruments (e.g., 2021 “adding new instruments”) are a useful operational companion.
+- Keep data hygiene tight (prices, costs, FX). Missing data triggers pruning in static reports and changes correlations/diversification multipliers. Rob’s blog posts on adding instruments (e.g., [2021 “adding new instruments”](https://qoppac.blogspot.com/2021/05/adding-new-instruments-or-how-i-learned.html)) are a useful operational companion.
