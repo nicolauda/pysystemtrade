@@ -77,9 +77,7 @@ def static_system_adhoc_report(
     """Build the full static selection report."""
     data = dataBlob()
     base_title = "Static selection of instruments"
-    title_with_suffix = (
-        f"{base_title} {title_suffix}" if title_suffix else base_title
-    )
+    title_with_suffix = f"{base_title} {title_suffix}" if title_suffix else base_title
     report_config = reportConfig(
         title=title_with_suffix, function="not_used", output="file"
     )
@@ -181,7 +179,9 @@ def static_system_results_for_capital(
 
 def estimate_instrument_count_from_capital(
     capital: float,
-    capital_instrument_table: Sequence[Tuple[float, int]] = DEFAULT_CAPITAL_AND_INSTRUMENT_COUNT_PAIRS,
+    capital_instrument_table: Sequence[
+        Tuple[float, int]
+    ] = DEFAULT_CAPITAL_AND_INSTRUMENT_COUNT_PAIRS,
 ) -> int:
     """Estimate instrument count from capital using log-space interpolation."""
     if capital <= 0:
@@ -269,7 +269,9 @@ def build_system_function(
 def build_capital_and_estimate_pairs(
     capitals: Iterable[float] | None,
     estimated_counts: Iterable[int] | None,
-    default_pairs: Sequence[Tuple[float, int]] = DEFAULT_CAPITAL_AND_INSTRUMENT_COUNT_PAIRS,
+    default_pairs: Sequence[
+        Tuple[float, int]
+    ] = DEFAULT_CAPITAL_AND_INSTRUMENT_COUNT_PAIRS,
 ) -> List[Tuple[float, int]]:
     """Pair capitals with estimated instrument counts, applying validation and defaults."""
     if capitals is None:
@@ -343,7 +345,9 @@ def prune_system_instruments_without_data(system: System):
 
     # Optional: drop weights for missing instruments so downstream code is lighter.
     config.instrument_weights = {
-        k: v for k, v in instrument_weights.items() if k in available_multiple_price_instruments
+        k: v
+        for k, v in instrument_weights.items()
+        if k in available_multiple_price_instruments
     }
 
 
