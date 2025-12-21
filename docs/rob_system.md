@@ -116,6 +116,62 @@ Caching ensures repeated queries (e.g., risk and accounts both asking for per-co
 - **Risk overlay**: post-portfolio constraints on risk and leverage (see [“Capital correction”](https://qoppac.blogspot.com/2016/06/capital-correction-pysystemtrade.html), 2016).
 - **Optimisation**: cost-aware smoothing of positions (see [“Optimising weights with costs”](https://qoppac.blogspot.com/2016/05/optimising-weights-with-costs.html), 2016).
 
+   ## Stage list (from `systems/provided/rob_system/run_system.py`)
+
+```python
+from systems.provided.rob_system.rawdata import myFuturesRawData
+from systems.provided.attenuate_vol.vol_attenuation_forecast_scale_cap import volAttenForecastScaleCap
+from systems.provided.dynamic_small_system_optimise.optimised_positions_stage import optimisedPositions
+from systems.provided.dynamic_small_system_optimise.accounts_stage import accountForOptimisedStage
+
+def futures_system(...):
+    return System(
+        [
+            Risk(),
+            accountForOptimisedStage(),
+            optimisedPositions(),
+            Portfolios(),
+            PositionSizing(),
+            myFuturesRawData(),          # <-- rawdata stage instance
+            ForecastCombine(),
+            volAttenForecastScaleCap(),
+            rules,
+        ],
+        sim_data,
+        config,
+    )
+```
+
+The order above is the execution order: `rawdata → rules → scaling → combination → portfolio → size → optimisation → accounts/risk`.
+
+## Why config strings say `rawdata.*`
+
+The system uses the **stage name** (not the class name) when wiring stages. `myFuturesRawData` inherits from `systems/rawdata.py`, which defines:
+
+```python
+class RawData(SystemStage):
+    @property
+    def name(self):
+        return "rawdata"
+```
+
+When the `System` is constructed, it sets `system.rawdata = myFuturesRawData()` because the `name` property returns `"rawdata"`. Therefore any config entry such as:
+
+```yaml
+data:
+  - "rawdata.get_daily_prices"
+  - "rawdata.get_cumulative_daily_vol_normalised_returns"
+```
+
+is resolved against the `rawdata` attribute on the system, which is the `myFuturesRawData` instance. You can extend the class (e.g., skew, demeaned factors) without changing config paths: they always refer to the stage name `rawdata`.
+
+## Practical takeaway
+
+- Keep using `rawdata.*` in `config.yaml` and rule definitions; the stage name is stable even if the class changes.
+- To add new raw series, implement methods in `myFuturesRawData` (or a subclass) and reference them via `rawdata.your_method` in config.
+- The same naming rule applies to other stages (e.g., `forecastScaleCap`, `portfolio`, `accounts`): config strings use the stage name exposed on the system instance.
+
+
 ## 3) Signal layer — trading rules
 
 ### Base system (`futuresconfig.yaml`)
@@ -200,13 +256,11 @@ The combine stage multiplies each scaled forecast by its weight and sums to one 
 
 ## 6) Raw data layer
 
-- **Base (`systems/rawdata.py`)**: prices, returns, vol, carry, FX normalisation, asset-class normalisation, diagnostics.
-- **Rob (`systems/provided/rob_system/rawdata.py`)**: all of the above plus:
-  - rolling `skew`, `neg_skew`, `kurtosis`,
-  - factor de-meaning vs universe or asset class,
-  - cross-sectional factor matrices and averages.
-
-These additional series feed the skew/factor rules and cross-sectional signals. They reflect the factor-style overlays Rob has discussed for broadening signal diversity.
+- **What lives here (base `systems/rawdata.py`)**: stitched prices, returns, two flavours of volatility (price-diff for forecasts; percentage returns for sizing), carry inputs, FX/asset-class normalisation, and diagnostics. The stage caches series so rules/portfolio don’t recompute them.
+- **How volatility is calculated**: by default a robust EWMA (35-day span, 10-day warm-up) with an additional floor using a 500-day 5% quantile. Price-diff vol uses stitched prices (Panama-style splicing); percentage-return vol uses `daily_denominator_price` to avoid using the stitched price as the denominator on positive-carry assets.
+- **Why stitched vs denominator prices**: stitched prices give smooth inputs for rules, but they would explode historical percentage returns if used as denominators. The `daily_denominator_price` method switches to the *current* contract price for the denominator so percentage returns and vol stay sensible.
+- **Customising raw data**: add new methods to a subclass (e.g., `myFuturesRawData`) whenever you need reusable diagnostics (carry components, moving averages, factor transforms) or asset-class-specific denominators. Config still calls them via `rawdata.*` because the stage name is stable.
+- **Rob extensions (`systems/provided/rob_system/rawdata.py`)**: rolling `skew`, `neg_skew`, `kurtosis`; factor de-meaning vs universe/asset class; cross-sectional factor matrices and averages; carry detail. These feed skew/factor and cross-sectional rules.
 
 ### Example: factor de-meaning
 
