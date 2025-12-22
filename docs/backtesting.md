@@ -6,6 +6,20 @@ Related documents:
 - [Using pysystemtrade as a production trading environment](/docs/production.md)
 - [Connecting pysystemtrade to interactive brokers](/docs/IB.md)
 
+For a DB-backed futures run on Mongo/Parquet data, see `examples/production/backtest_db.py`
+which wraps `sysproduction.backtesting.db_backtest_runner.run_backtest`.
+
+### Running a DB-backed backtest (Mongo + Parquet)
+(note: pandas>=2.2 and quantstats are required)
+- Prereqs: configure `private/private_config.yaml` (or set `PYSYS_PRIVATE_CONFIG_DIR`) with `parquet_store` and optional Mongo credentials; seed the DB with prices/FX/spread costs.
+- Quick start: `python examples/production/backtest_db.py` (uses `examples/production/futuresconfig.yaml`).
+- Custom config: `python examples/production/backtest_db.py --config /path/to/your_config.yaml`.
+- Limit instruments (recommended if your DB has extra markets): `--instruments SOFR,US10,EUROSTX,V2X,MXP,CORN`.
+- Output: reports/plots go to `backtest_results/` next to the config (QuantStats HTML, PDF summary, txt summary, terminal log; PNGs are kept only if `--keep-intermediate-figs`). Use `--no-report` to skip the txt summary and `--no-debug-log` to skip the `.log`.
+- Cache: add `--cache` to load `backtest_results/<config>_system_cache.pckz` if present, then save the refreshed cache; use `--cache-file` to override the path or `--no-cache-compress` to save an uncompressed `.pck`. If data/config change, rerun without `--cache` (or delete the pickle) to avoid stale results.
+- Estimates export: if your YAML has any `use_*_estimates` flags True, the runner saves a YAML snapshot of the estimated params under `backtest_results/`. Set `BacktestConfig.export_estimates=False` to skip this export.
+- Universe logic: the runner starts from `config.instruments` if present, otherwise from the keys of `instrument_weights`, otherwise all instruments returned by the DB; the `--instruments` flag filters that base universe. In this last case, if `use_instrument_weight_estimates` and `use_instrument_div_mult_estimates` are `false` an error will occur since no weights are presents.
+
 
 This guide is divided into four parts. The first [How do I?](#how-do-i) explains how to do many common tasks. The second part [Guide](#guide) details the relevant parts of the code, and explains how to modify or create new parts. The third part [Processes](#Processes) discusses certain processes that cut across multiple parts of the code in more detail. The final part [Reference](#reference) includes lists of methods and parameters.
 

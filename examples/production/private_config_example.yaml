@@ -39,3 +39,5 @@ ib_idoffset: 1 # the default
 mongo_host: 'localhost' # can be elsewhere
 mongo_db: 'production' # fits with all the documentation
 
+# Where to save sampled-contracts dashboard (PDF). Defaults to sampled_contracts_dashboard.pdf in the private folder.
+# sampled_contracts_dashboard_pdf: '/path/to/reports/sampled_contracts_dashboard.pdf'

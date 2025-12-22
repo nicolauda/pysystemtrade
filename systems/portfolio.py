@@ -254,6 +254,13 @@ class Portfolios(SystemStage):
         # unknown frequency
         subsys_position = self.get_subsystem_position(instrument_code)
 
+        if instrument_code not in instr_weights.columns:
+            self.log.warning(
+                "Instrument weights missing for %s, returning zero notional position",
+                instrument_code,
+            )
+            return pd.Series(0.0, index=subsys_position.index)
+
         # daily
         instrument_weight_this_code = instr_weights[instrument_code]
 

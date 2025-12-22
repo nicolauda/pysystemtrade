@@ -1320,11 +1320,11 @@ def get_avg_corr(sigma):
     new_sigma = copy(sigma)
     np.fill_diagonal(new_sigma, np.nan)
     if np.all(np.isnan(new_sigma)):
-        return np.nan
+        return float("nan")
 
     avg_corr = np.nanmean(new_sigma)
 
-    return avg_corr
+    return float(avg_corr)
 
 
 def cluster_correlation_matrix(corr_matrix: np.array, max_cluster_size=3) -> list:
