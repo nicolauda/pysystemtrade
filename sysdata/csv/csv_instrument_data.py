@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from syscore.fileutils import resolve_path_and_filename_for_package
 from sysdata.futures.instruments import futuresInstrumentData
 from syscore.constants import arg_not_supplied
@@ -27,10 +29,37 @@ class csvFuturesInstrumentData(futuresInstrumentData):
     ):
         super().__init__(log=log)
 
+        # Prefer canonical repo location to avoid being shadowed by current working dir packages
+        repo_config = (
+            Path(__file__).resolve().parents[2]
+            / "data"
+            / "futures"
+            / "csvconfig"
+            / CONFIG_FILE_NAME
+        )
+
         if datapath is arg_not_supplied:
-            datapath = INSTRUMENT_CONFIG_PATH
-        config_file = resolve_path_and_filename_for_package(datapath, CONFIG_FILE_NAME)
-        self._config_file = config_file
+            resolved = repo_config
+            if not resolved.exists():
+                resolved = Path(
+                    resolve_path_and_filename_for_package(
+                        INSTRUMENT_CONFIG_PATH, CONFIG_FILE_NAME
+                    )
+                )
+        else:
+            resolved = Path(
+                resolve_path_and_filename_for_package(datapath, CONFIG_FILE_NAME)
+            )
+            # If the requested path is missing but the canonical repo file exists, prefer it
+            if (not resolved.exists()) and repo_config.exists():
+                resolved = repo_config
+
+        self._config_file = str(resolved)
+        self._fallback_candidates = [
+            str(path)
+            for path in {repo_config, Path(self._config_file)}
+            if path is not None
+        ]
 
     def get_list_of_instruments(self) -> list:
         return list(self.get_all_instrument_data_as_df().index)
@@ -83,10 +112,33 @@ class csvFuturesInstrumentData(futuresInstrumentData):
         return config_data
 
     def _load_and_store_instrument_csv_as_df(self) -> pd.DataFrame:
-        try:
-            config_data = pd.read_csv(self.config_file)
-        except BaseException:
-            raise Exception("Can't read file %s" % self.config_file)
+        candidate_paths = [self.config_file]
+        # Include any precomputed fallbacks (canonical repo path etc.)
+        for path in getattr(self, "_fallback_candidates", []):
+            if path not in candidate_paths:
+                candidate_paths.append(path)
+
+        config_data = None
+        errors = []
+        for path in candidate_paths:
+            try:
+                config_data = pd.read_csv(path)
+                if path != self.config_file:
+                    self.log.warning(
+                        "Instrument config %s missing; using fallback %s",
+                        self.config_file,
+                        path,
+                    )
+                    # cache the fallback so subsequent calls don't keep failing
+                    self._config_file = path
+                break
+            except BaseException as exc:
+                errors.append(f"{path} ({exc})")
+
+        if config_data is None:
+            raise Exception(
+                "Can't read instrument config (tried %s)" % ", ".join(errors)
+            )
 
         try:
             config_data.index = config_data.Instrument

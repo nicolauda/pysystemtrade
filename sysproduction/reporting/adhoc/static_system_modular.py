@@ -1,18 +1,26 @@
 """Static instrument selection report and CLI helpers.
 
 Logic (matches the blog post and reference report):
-- Pull a futures system (`futures_system`) built on your sampled-contracts DB, then drop any instrument that lacks price data (adds to `ignore_instruments` and removes its weight) to avoid missingData failures.
+- Pull a futures system (`futures_system`) built on your sampled-contracts DB, then drop any
+  instrument that lacks price data (adds to `ignore_instruments` and removes its weight)
+  to avoid missingData failures.
 - Build the instrument correlation matrix once (capital-independent), then for each capital level:
   - Estimate instrument count (log-space interpolation of the reference ladder) unless you override it.
   - Compute a notional IDM = instruments**0.25 and max single-instrument weight = 1 / instruments.
-  - Call `find_best_ordered_set_of_instruments` from `optimise_small_system` to greedily pick the next market that maximises portfolio SR given handcrafted risk weights from `handcraftPortfolio`, mean/stdev estimates (unit stdev, SR via net_SR), and the correlation subset.
+  - Call `find_best_ordered_set_of_instruments` from `optimise_small_system` to greedily
+    pick instruments: start with the highest standalone SR, then keep adding the market
+    that maximises portfolio SR given handcrafted risk weights from `handcraftPortfolio`,
+    mean/stdev estimates (unit stdev, SR via net_SR), and the correlation subset. The
+    loop stops early if adding another instrument would drop the portfolio SR below
+    90% of the best-so-far SR, so the final list can be shorter than the estimated count.
   - Return both the ordered list and the alphabetically sorted list in the report.
 
 Usage:
-- Full report (default capital ladder): `python -m sysproduction.reporting.adhoc.static_system_modular --report`
-- Report with custom capital levels: `python -m sysproduction.reporting.adhoc.static_system_modular --report --capital 100000 250000`
-- Use capital from DB if present: `python -m sysproduction.reporting.adhoc.static_system_modular --use-db-capital --report`
-- Get only the instrument list for a capital: `python -m sysproduction.reporting.adhoc.static_system_modular --capital 500000`
+- Full report (default capital ladder): `python -m sysproduction.reporting.adhoc.static_system_modular`
+- Report with custom capital levels: `python -m sysproduction.reporting.adhoc.static_system_modular --capital 100000 250000`
+- Use capital from DB if present: `python -m sysproduction.reporting.adhoc.static_system_modular --use-db-capital`
+- Get only the instrument list for a capital: `python -m sysproduction.reporting.adhoc.static_system_modular --capital 500000 --no-report`
+- Suppress report generation and print lists only for the chosen capital(s): add `--no-report`
 - Override estimated instrument counts (single or per capital): `python -m sysproduction.reporting.adhoc.static_system_modular --capital 500000 --estimated-count 45`
 - Pick a config file: `python -m sysproduction.reporting.adhoc.static_system_modular --config systems.provided.rob_system.config.yaml`
 - Force using all sampled instruments instead of production list: add `--use-all-sampled-instruments`
@@ -26,7 +34,7 @@ Notes:
 import argparse
 import math
 import os
-from typing import Iterable, List, Sequence, Tuple
+from collections.abc import Iterable, Sequence
 
 from systems.provided.rob_system.run_system import futures_system, System
 from systems.provided.static_small_system_optimise.optimise_small_system import (
@@ -52,7 +60,7 @@ DEFAULT_CONFIG_FILENAME = "systems.provided.rob_system.config.yaml"
 
 # Default pairs taken from the reference report:
 # https://github.com/robcarver17/reports/blob/master/Static_selection_of_instruments
-DEFAULT_CAPITAL_AND_INSTRUMENT_COUNT_PAIRS: List[Tuple[float, int]] = [
+DEFAULT_CAPITAL_AND_INSTRUMENT_COUNT_PAIRS: list[tuple[float, int]] = [
     (10_000, 7),
     (25_000, 13),
     (50_000, 22),
@@ -66,15 +74,23 @@ DEFAULT_CAPITAL_AND_INSTRUMENT_COUNT_PAIRS: List[Tuple[float, int]] = [
     (25_000_000, 59),
 ]
 
+USE_GLOBAL_CONFIGURATION = False
+GLOBAL_CAPITAL = None
+GLOBAL_ESTIMATED_COUNT = None
+GLOBAL_USE_DB_CAPITAL = False
+GLOBAL_NO_REPORT = False
+GLOBAL_CONFIG_FILENAME = None
+GLOBAL_USE_ALL_SAMPLED_INSTRUMENTS = False
+
 
 def static_system_adhoc_report(
     system_function=futures_system,
     list_of_capital_and_estimate_instrument_count_tuples: Sequence[
-        Tuple[float, int]
+        tuple[float, int]
     ] = DEFAULT_CAPITAL_AND_INSTRUMENT_COUNT_PAIRS,
     title_suffix: str = "",
 ):
-    """Build the full static selection report."""
+    """Build and write the static selection report for the supplied capital/estimate pairs."""
     data = dataBlob()
     base_title = "Static selection of instruments"
     title_with_suffix = f"{base_title} {title_suffix}" if title_suffix else base_title
@@ -96,9 +112,9 @@ def static_system_adhoc_report(
 
 def build_static_selection_report(
     system_function,
-    capital_and_estimate_pairs: Sequence[Tuple[float, int]],
+    capital_and_estimate_pairs: Sequence[tuple[float, int]],
 ) -> list:
-    """Return the report payload for the static selection run."""
+    """Return the report payload for the static selection run, reusing correlation across capitals."""
     system = system_function()
     prune_system_instruments_without_data(system)
     corr_matrix = get_correlation_matrix(system)  # capital irrelevant for correlation
@@ -139,7 +155,7 @@ def select_instruments_for_capital(
     system_function=futures_system,
     corr_matrix: correlationEstimate | None = None,
 ) -> list:
-    """Return the ordered list of instruments for a given capital level."""
+    """Return the ordered instrument list for a capital, estimating instrument count when omitted."""
     if capital <= 0:
         raise ValueError("Capital must be positive.")
 
@@ -165,6 +181,7 @@ def static_system_results_for_capital(
     est_number_of_instruments: int,
     capital: float,
 ):
+    """Run the static optimiser for a capital with derived IDM and weight caps."""
     notional_starting_IDM = est_number_of_instruments**0.25
     max_instrument_weight = 1.0 / est_number_of_instruments
 
@@ -180,10 +197,10 @@ def static_system_results_for_capital(
 def estimate_instrument_count_from_capital(
     capital: float,
     capital_instrument_table: Sequence[
-        Tuple[float, int]
+        tuple[float, int]
     ] = DEFAULT_CAPITAL_AND_INSTRUMENT_COUNT_PAIRS,
 ) -> int:
-    """Estimate instrument count from capital using log-space interpolation."""
+    """Estimate instrument count from capital using log-space interpolation of the reference ladder."""
     if capital <= 0:
         raise ValueError("Capital must be positive.")
 
@@ -223,7 +240,7 @@ def estimate_instrument_count_from_capital(
 
 
 def get_current_capital_from_db(data: dataBlob | None = None) -> float:
-    """Fetch current total capital from the production DB."""
+    """Fetch current total capital from the production DB, reusing an existing data blob when provided."""
     data = data or dataBlob()
     return dataCapital(data).get_current_total_capital()
 
@@ -233,9 +250,8 @@ def build_system_function(
     use_all_sampled_instruments: bool = False,
 ):
     """
-    Return a factory that builds a futures system using the chosen config.
-    Optionally override the production instrument list by using every instrument
-    found in the sampled-contracts DB.
+    Return a factory that builds a futures system using the chosen config, optionally
+    swapping the production instrument list for every instrument found in the sampled-contracts DB.
     """
 
     def _system():
@@ -270,10 +286,10 @@ def build_capital_and_estimate_pairs(
     capitals: Iterable[float] | None,
     estimated_counts: Iterable[int] | None,
     default_pairs: Sequence[
-        Tuple[float, int]
+        tuple[float, int]
     ] = DEFAULT_CAPITAL_AND_INSTRUMENT_COUNT_PAIRS,
-) -> List[Tuple[float, int]]:
-    """Pair capitals with estimated instrument counts, applying validation and defaults."""
+) -> list[tuple[float, int]]:
+    """Pair capitals with estimated instrument counts, validating inputs and filling from defaults when missing."""
     if capitals is None:
         if estimated_counts:
             estimated_counts = list(estimated_counts)
@@ -316,8 +332,8 @@ def build_capital_and_estimate_pairs(
 
 def prune_system_instruments_without_data(system: System):
     """
-    Ensure the system ignores instruments that are not present in the sampled contracts DB.
-    We do this by expanding the ignore list in config before any heavy calculations start.
+    Ensure the system ignores instruments absent from the sampled contracts DB by expanding
+    the ignore list (and optionally trimming weights) before any heavy calculations start.
     """
     try:
         available_multiple_price_instruments = set(
@@ -352,6 +368,7 @@ def prune_system_instruments_without_data(system: System):
 
 
 def parse_cli_args():
+    """Parse CLI options for report generation or instrument listing."""
     parser = argparse.ArgumentParser(
         description="Generate the static instrument selection report or fetch a list for a given capital."
     )
@@ -373,11 +390,6 @@ def parse_cli_args():
         help="Pull capital from the production database if no capital is supplied.",
     )
     parser.add_argument(
-        "--report",
-        action="store_true",
-        help="Write the report file instead of only printing instrument lists.",
-    )
-    parser.add_argument(
         "--config",
         type=str,
         default=DEFAULT_CONFIG_FILENAME,
@@ -388,11 +400,40 @@ def parse_cli_args():
         action="store_true",
         help="Ignore production instrument list and use every instrument found in the sampled-contracts DB.",
     )
+    parser.add_argument(
+        "--no-report",
+        action="store_true",
+        help="Skip writing the report; only print the instrument lists.",
+    )
     return parser.parse_args()
 
 
+def _coerce_to_sequence(value):
+    """Normalize a scalar or iterable to a list; preserve None."""
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+def _get_args():
+    """Return configuration either from globals (for embedding) or CLI arguments."""
+    if USE_GLOBAL_CONFIGURATION:
+        return argparse.Namespace(
+            capital=_coerce_to_sequence(GLOBAL_CAPITAL),
+            estimated_count=_coerce_to_sequence(GLOBAL_ESTIMATED_COUNT),
+            use_db_capital=bool(GLOBAL_USE_DB_CAPITAL),
+            no_report=bool(GLOBAL_NO_REPORT),
+            config=GLOBAL_CONFIG_FILENAME or DEFAULT_CONFIG_FILENAME,
+            use_all_sampled_instruments=bool(GLOBAL_USE_ALL_SAMPLED_INSTRUMENTS),
+        )
+    return parse_cli_args()
+
+
 def main():
-    args = parse_cli_args()
+    """Entry point: resolve config, build system, and produce report or instrument list."""
+    args = _get_args()
 
     system_function = build_system_function(
         config_filename=args.config,
@@ -418,8 +459,8 @@ def main():
         capitals=capitals, estimated_counts=args.estimated_count
     )
 
-    # Default to report mode if the user does not request a specific list
-    report_mode = args.report or capitals is None
+    # Default to report mode unless the user explicitly opts out
+    report_mode = not args.no_report
     if report_mode:
         static_system_adhoc_report(
             system_function=system_function,

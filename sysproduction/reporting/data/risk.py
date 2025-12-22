@@ -1,6 +1,23 @@
 from typing import Union, Dict
 import numpy as np
 import pandas as pd
+
+# SciPy 1.16 removed `_lazywhere`; statsmodels<0.15 still expects it. Provide a
+# shim so imports succeed when running with newer SciPy versions.
+try:
+    from scipy._lib import _util as _scipy_util
+
+    if not hasattr(_scipy_util, "_lazywhere") and hasattr(_scipy_util, "_lazyselect"):
+
+        def _lazywhere(cond, arrays, f, fillvalue=np.nan):
+            return _scipy_util._lazyselect(
+                [cond], [lambda *args: f(*args)], arrays, default=fillvalue
+            )
+
+        _scipy_util._lazywhere = _lazywhere
+except Exception:
+    pass
+
 from statsmodels.formula import api as sm
 
 from syscore.dateutils import ROOT_BDAYS_INYEAR, n_days_ago, CALENDAR_DAYS_IN_YEAR
