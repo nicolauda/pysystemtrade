@@ -259,9 +259,14 @@ def email_report(
 
 
 def output_file_report(
-    parsed_report: ParsedReport, report_config: reportConfig, data: dataBlob
+    parsed_report: ParsedReport,
+    report_config: reportConfig,
+    data: dataBlob,
+    report_directory: str | None = None,
 ):
-    full_filename = resolve_report_filename(report_config=report_config, data=data)
+    full_filename = resolve_report_filename(
+        report_config=report_config, data=data, report_directory=report_directory
+    )
     if parsed_report.contains_pdf:
         ## Already a file so just rename temp file name to final one
         pdf_full_filename = "%s.pdf" % full_filename
@@ -274,10 +279,14 @@ def output_file_report(
     data.log.debug("Written report to %s" % full_filename)
 
 
-def resolve_report_filename(report_config, data: dataBlob):
+def resolve_report_filename(
+    report_config, data: dataBlob, report_directory: str | None = None
+):
     filename_with_spaces = report_config.title
     filename = filename_with_spaces.replace(" ", "_")
-    use_directory = get_directory_for_reporting(data)
+    use_directory = (
+        report_directory if report_directory is not None else get_directory_for_reporting(data)
+    )
     use_directory_resolved = get_resolved_pathname(use_directory)
     full_filename = os.path.join(use_directory_resolved, filename)
 

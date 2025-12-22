@@ -36,8 +36,8 @@ def futures_system(
 ):
     """
     Build the futures system using the rob_system pipeline but with flexible inputs.
-    - data: dbFuturesSimData auto-created if omitted/None.
-    - config: Config object or path/str; falls back to rob_system config YAML.
+    - data: dbFuturesSimData auto-created if omitted.
+    - config: Config object or path/str (must be provided).
     - rules: custom Rules instance; defaults to Rules().
     - config_filename/config_file: alternate names for config (kept for compatibility).
     """

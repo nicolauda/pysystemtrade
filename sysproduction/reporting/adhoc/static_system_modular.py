@@ -24,9 +24,13 @@ Usage:
 - Override estimated instrument counts (single or per capital): `python -m sysproduction.reporting.adhoc.static_system_modular --capital 500000 --estimated-count 45`
 - Pick a config file: `python -m sysproduction.reporting.adhoc.static_system_modular --config systems.provided.rob_system.config.yaml`
 - Force using all sampled instruments instead of production list: add `--use-all-sampled-instruments`
+- Write the report next to the resolved config file instead of the default directory: add `--report-in-config-dir`
 
 Notes:
 - The script auto-prunes instruments that are missing from your sampled contracts DB before computing correlations.
+- Report titles get an auto suffix from flags: `use_db_capital`, `all_sampled_instruments`,
+  and `config_<basename>`; capital values are not included. Override with `title_suffix`
+  (or `GLOBAL_TITLE_SUFFIX` in the wrapper) if you want something custom.
 - Defaults mirror https://github.com/robcarver17/reports/blob/master/Static_selection_of_instruments.
 - Blog post https://qoppac.blogspot.com/2021/06/static-optimisation-of-best-set-of.html
 """
@@ -34,14 +38,17 @@ Notes:
 import argparse
 import math
 import os
+import sys
+from pathlib import Path
 from collections.abc import Iterable, Sequence
 
-from systems.provided.rob_system.run_system import futures_system, System
+from systems.custom_system.run_system import futures_system, System
 from systems.provided.static_small_system_optimise.optimise_small_system import (
     find_best_ordered_set_of_instruments,
     get_correlation_matrix,
 )
 
+from sysdata.config.configdata import Config
 from sysquant.estimators.correlation_estimator import correlationEstimate
 from sysproduction.reporting.reporting_functions import (
     parse_report_results,
@@ -81,6 +88,7 @@ GLOBAL_USE_DB_CAPITAL = False
 GLOBAL_NO_REPORT = False
 GLOBAL_CONFIG_FILENAME = None
 GLOBAL_USE_ALL_SAMPLED_INSTRUMENTS = False
+GLOBAL_REPORT_IN_CONFIG_DIR = False
 
 
 def static_system_adhoc_report(
@@ -89,6 +97,7 @@ def static_system_adhoc_report(
         tuple[float, int]
     ] = DEFAULT_CAPITAL_AND_INSTRUMENT_COUNT_PAIRS,
     title_suffix: str = "",
+    report_directory: str | None = None,
 ):
     """Build and write the static selection report for the supplied capital/estimate pairs."""
     data = dataBlob()
@@ -106,7 +115,10 @@ def static_system_adhoc_report(
     parsed_report_results = parse_report_results(data, report_results=report_results)
 
     output_file_report(
-        parsed_report=parsed_report_results, data=data, report_config=report_config
+        parsed_report=parsed_report_results,
+        data=data,
+        report_config=report_config,
+        report_directory=report_directory,
     )
 
 
@@ -245,8 +257,56 @@ def get_current_capital_from_db(data: dataBlob | None = None) -> float:
     return dataCapital(data).get_current_total_capital()
 
 
+def resolve_config_filename(config_filename: str | None) -> str:
+    """
+    Resolve a config filename with a few fallbacks:
+    - If config_filename == "rob_system", use the standard provided config.
+    - If config_filename is None, try zero-config discovery:
+        * look for <entrypoint_stem>_config.yaml alongside the entrypoint file
+          (also handles <name>_backtest.py -> <name>_config.yaml).
+        * fall back to DEFAULT_CONFIG_FILENAME when nothing is found.
+    - Otherwise, return the supplied config_filename unchanged.
+    """
+    if config_filename == "rob_system":
+        return DEFAULT_CONFIG_FILENAME
+
+    if config_filename:
+        return config_filename
+
+    try:
+        main_file = Path(getattr(sys.modules["__main__"], "__file__", "")).resolve()
+    except Exception:
+        main_file = None
+
+    if (not main_file) or (not main_file.exists()):
+        try:
+            argv_path = Path(sys.argv[0]).resolve()
+            if argv_path.exists():
+                main_file = argv_path
+        except Exception:
+            main_file = None
+
+    if main_file and main_file.exists():
+        candidates = []
+        stem = main_file.stem
+        candidates.append(main_file.with_name(f"{stem}_config.yaml"))
+        if stem.endswith("_backtest"):
+            base_stem = stem[: -len("_backtest")]
+            candidates.append(main_file.with_name(f"{base_stem}_config.yaml"))
+        # Optional: align with folder name (<folder>_config.yaml)
+        parent_stem = main_file.parent.name
+        if parent_stem:
+            candidates.append(main_file.with_name(f"{parent_stem}_config.yaml"))
+
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+
+    return DEFAULT_CONFIG_FILENAME
+
+
 def build_system_function(
-    config_filename: str = DEFAULT_CONFIG_FILENAME,
+    config_filename: str | None = DEFAULT_CONFIG_FILENAME,
     use_all_sampled_instruments: bool = False,
 ):
     """
@@ -255,7 +315,9 @@ def build_system_function(
     """
 
     def _system():
-        system = futures_system(config_filename=config_filename)
+        resolved_config = resolve_config_filename(config_filename)
+        config_obj = Config(resolved_config)
+        system = futures_system(config=config_obj)
         if use_all_sampled_instruments:
             try:
                 available = (
@@ -392,8 +454,12 @@ def parse_cli_args():
     parser.add_argument(
         "--config",
         type=str,
-        default=DEFAULT_CONFIG_FILENAME,
-        help="Config file to load for the system (default: systems.provided.rob_system.config.yaml).",
+        default=None,
+        help=(
+            "Config file to load for the system. "
+            "Defaults to auto-discovery (<name>_config.yaml beside entrypoint) "
+            "or systems.provided.rob_system.config.yaml."
+        ),
     )
     parser.add_argument(
         "--use-all-sampled-instruments",
@@ -404,6 +470,11 @@ def parse_cli_args():
         "--no-report",
         action="store_true",
         help="Skip writing the report; only print the instrument lists.",
+    )
+    parser.add_argument(
+        "--report-in-config-dir",
+        action="store_true",
+        help="Write the report next to the resolved config file instead of the default reporting directory.",
     )
     return parser.parse_args()
 
@@ -425,58 +496,114 @@ def _get_args():
             estimated_count=_coerce_to_sequence(GLOBAL_ESTIMATED_COUNT),
             use_db_capital=bool(GLOBAL_USE_DB_CAPITAL),
             no_report=bool(GLOBAL_NO_REPORT),
-            config=GLOBAL_CONFIG_FILENAME or DEFAULT_CONFIG_FILENAME,
+            config=GLOBAL_CONFIG_FILENAME,
             use_all_sampled_instruments=bool(GLOBAL_USE_ALL_SAMPLED_INSTRUMENTS),
+            report_in_config_dir=bool(GLOBAL_REPORT_IN_CONFIG_DIR),
         )
     return parse_cli_args()
+
+
+def static_system_modular(
+    capital: float | Iterable[float] | None = None,
+    estimated_count: int | Iterable[int] | None = None,
+    use_db_capital: bool = False,
+    config_filename: str | None = DEFAULT_CONFIG_FILENAME,
+    use_all_sampled_instruments: bool = False,
+    report: bool = True,
+    title_suffix: str | None = None,
+    report_in_config_dir: bool = False,
+):
+    """
+    Programmatic entry point that mirrors the CLI:
+
+    - When report=True (default) it writes the report file and returns None.
+    - When report=False it returns a list of (capital, estimated_count, instruments) tuples.
+    """
+    capitals = _coerce_to_sequence(capital)
+    estimated_counts = _coerce_to_sequence(estimated_count)
+
+    resolved_config_filename = resolve_config_filename(config_filename)
+
+    report_directory_override = None
+    if report_in_config_dir:
+        config_path_candidate = Path(resolved_config_filename).expanduser()
+        if not config_path_candidate.is_absolute():
+            config_path_candidate = (Path.cwd() / config_path_candidate).resolve()
+        if config_path_candidate.exists():
+            report_directory_override = str(config_path_candidate.parent)
+
+    system_function = build_system_function(
+        config_filename=resolved_config_filename,
+        use_all_sampled_instruments=use_all_sampled_instruments,
+    )
+
+    if use_db_capital and not capitals:
+        capitals = [get_current_capital_from_db()]
+
+    capital_and_estimate_pairs = build_capital_and_estimate_pairs(
+        capitals=capitals, estimated_counts=estimated_counts
+    )
+
+    if report:
+        # Preserve existing suffix conventions unless a custom one is provided.
+        resolved_suffix = title_suffix
+        if resolved_suffix is None:
+            suffix_tokens = []
+            if use_db_capital:
+                suffix_tokens.append("use_db_capital")
+            if use_all_sampled_instruments:
+                suffix_tokens.append("all_sampled_instruments")
+            if (
+                resolved_config_filename
+                and resolved_config_filename != DEFAULT_CONFIG_FILENAME
+            ):
+                suffix_tokens.append(
+                    f"config_{os.path.basename(resolved_config_filename)}"
+                )
+            resolved_suffix = (
+                "_".join(suffix_tokens) + "_report" if suffix_tokens else ""
+            )
+
+        static_system_adhoc_report(
+            system_function=system_function,
+            list_of_capital_and_estimate_instrument_count_tuples=capital_and_estimate_pairs,
+            title_suffix=resolved_suffix,
+            report_directory=report_directory_override,
+        )
+        return None
+
+    corr_matrix = get_correlation_matrix(system_function())
+    results = []
+    for cap, est in capital_and_estimate_pairs:
+        instruments = select_instruments_for_capital(
+            capital=cap,
+            estimated_instrument_count=est,
+            system_function=system_function,
+            corr_matrix=corr_matrix,
+        )
+        results.append((cap, est, instruments))
+    return results
 
 
 def main():
     """Entry point: resolve config, build system, and produce report or instrument list."""
     args = _get_args()
 
-    system_function = build_system_function(
+    report_mode = not args.no_report
+    results = static_system_modular(
+        capital=args.capital,
+        estimated_count=args.estimated_count,
+        use_db_capital=args.use_db_capital,
         config_filename=args.config,
         use_all_sampled_instruments=args.use_all_sampled_instruments,
+        report=report_mode,
+        report_in_config_dir=args.report_in_config_dir,
     )
 
-    suffix_tokens = []
-    if args.use_db_capital:
-        suffix_tokens.append("use_db_capital")
-    if args.use_all_sampled_instruments:
-        suffix_tokens.append("all_sampled_instruments")
-    if args.config and args.config != DEFAULT_CONFIG_FILENAME:
-        suffix_tokens.append(f"config_{os.path.basename(args.config)}")
-    title_suffix = ""
-    if suffix_tokens:
-        title_suffix = "_".join(suffix_tokens) + "_report"
-
-    capitals = args.capital
-    if args.use_db_capital and not capitals:
-        capitals = [get_current_capital_from_db()]
-
-    capital_and_estimate_pairs = build_capital_and_estimate_pairs(
-        capitals=capitals, estimated_counts=args.estimated_count
-    )
-
-    # Default to report mode unless the user explicitly opts out
-    report_mode = not args.no_report
-    if report_mode:
-        static_system_adhoc_report(
-            system_function=system_function,
-            list_of_capital_and_estimate_instrument_count_tuples=capital_and_estimate_pairs,
-            title_suffix=title_suffix,
-        )
+    if results is None:
         return
 
-    corr_matrix = get_correlation_matrix(system_function())
-    for capital, est_count in capital_and_estimate_pairs:
-        instruments = select_instruments_for_capital(
-            capital=capital,
-            estimated_instrument_count=est_count,
-            system_function=system_function,
-            corr_matrix=corr_matrix,
-        )
+    for capital, est_count, instruments in results:
         print(
             "Capital %.0f (estimated %d instruments) -> %s"
             % (capital, est_count, instruments)
