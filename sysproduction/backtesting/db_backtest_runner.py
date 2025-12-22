@@ -14,11 +14,11 @@ Prerequisites:
   (see docs/production.md for data loading).
 """
 
-from pathlib import Path
-from datetime import datetime
 import argparse
 import contextlib
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 import io
 import logging
 import warnings
@@ -30,7 +30,7 @@ import pandas as pd
 
 from sysdata.config.configdata import Config
 from sysdata.sim.db_futures_sim_data import dbFuturesSimData
-from systems.provided.futures_chapter15.basesystem import futures_system
+from systems.custom_system.run_system import futures_system
 from systems.diagoutput import systemDiag
 from syscore.fileutils import (
     get_resolved_pathname,
