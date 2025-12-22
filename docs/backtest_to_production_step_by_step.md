@@ -46,6 +46,15 @@ Validation:
 - `echo $PYSYS_CODE $MONGO_DATA $PYSYS_PRIVATE_CONFIG_DIR` shows sensible paths.
 - `ls $SCRIPT_PATH` lists the cron wrappers; `crontab -l` contains your schedule (Linux).
 
+Optional: enable the socket logging server (for prod logging)
+- Ensure `PYSYS_LOGGING_CONFIG` points to the prod config (e.g. `pysystemtrade/syslogging/logging_prod.yaml`).
+- Create the log directory and ownership for the service user:  
+  `mkdir -p /path/to/pysystemtrade-private/logs && chown -R youruser:yourgroup /path/to/pysystemtrade-private/logs`
+- Copy the service unit into systemd and reload:  
+  `sudo cp /path/to/pysystemtrade-private/logging_server.service /etc/systemd/system/ && sudo systemctl daemon-reload`
+- Start and enable it: `sudo systemctl enable --now logging_server.service`
+- Verify: `systemctl status logging_server.service`; `ss -ltnp | grep 9020`; logs written to `/path/to/pysystemtrade-private/logs/pysystemtrade.log`. If the service is disabled, prod logging will fall back to sim (stdout).
+
 ## Step 1: Install and set private config
 
 1. Create or activate your virtualenv, then install pysystemtrade.
