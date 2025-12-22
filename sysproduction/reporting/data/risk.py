@@ -7,9 +7,7 @@ import pandas as pd
 try:
     from scipy._lib import _util as _scipy_util
 
-    if not hasattr(_scipy_util, "_lazywhere") and hasattr(
-        _scipy_util, "_lazyselect"
-    ):
+    if not hasattr(_scipy_util, "_lazywhere") and hasattr(_scipy_util, "_lazyselect"):
 
         def _lazywhere(cond, arrays, f, fillvalue=np.nan):
             return _scipy_util._lazyselect(
