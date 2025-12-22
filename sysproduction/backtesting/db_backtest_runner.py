@@ -12,6 +12,10 @@ Prerequisites:
   `parquet_store` and optional Mongo credentials configured.
 - Data already seeded into Mongo/Parquet and enviroment variables already set 
   (see docs/production.md for data loading).
+- Optional: pass --use-db-capital to pull capital/base_currency from the DB (via
+  dataCapital/dataCurrency) instead of the YAML notional_trading_capital/base_currency.
+  Requires capital to exist in parquet/Mongo for the chosen strategy.
+  Run `update_total_capital` then `update_strategy_capital` first so capital exists.
 """
 
 import argparse
@@ -30,8 +34,13 @@ import pandas as pd
 
 from sysdata.config.configdata import Config
 from sysdata.sim.db_futures_sim_data import dbFuturesSimData
+from sysdata.data_blob import dataBlob
+from sysproduction.data.capital import dataCapital
+from sysproduction.data.currency_data import dataCurrency
 from systems.custom_system.run_system import futures_system
 from systems.diagoutput import systemDiag
+from syscore.capital import fixed_capital, full_compounding, half_compounding
+from syscore.exceptions import missingData
 from syscore.fileutils import (
     get_resolved_pathname,
     resolve_path_and_filename_for_package,
@@ -158,6 +167,13 @@ class BacktestConfig:
         Sets system.config.backtest_compress before pickling (compressed .pckz files).
     export_estimates : bool
         Save estimated parameters to YAML when estimation flags are enabled.
+    use_db_capital : bool
+        When True, fetch capital/base_currency from dataCapital/dataCurrency (strategy_name based) instead of YAML.
+    strategy_name : str | None
+        Strategy key for DB capital lookup; defaults to the config filename stem.
+    capital_multiplier : str | None
+        Override capital compounding without editing YAML. Provide 'fixed' / 'full' / 'half'
+        or a dotted path to a function (e.g. syscore.capital.full_compounding).
     """
 
     config_path: Optional[Path] = None
@@ -175,6 +191,9 @@ class BacktestConfig:
     cache_file: Optional[Path] = None
     cache_compress: bool = True
     export_estimates: bool = True
+    use_db_capital: bool = False
+    strategy_name: Optional[str] = None
+    capital_multiplier: Optional[str] = None
 
     def with_defaults(self) -> "BacktestConfig":
         inferred = _infer_default_config_path()
@@ -218,6 +237,9 @@ class BacktestConfig:
             cache_file=resolved_cache,
             cache_compress=bool(self.cache_compress),
             export_estimates=bool(self.export_estimates),
+            use_db_capital=bool(self.use_db_capital),
+            strategy_name=self.strategy_name or resolved_config.stem,
+            capital_multiplier=self.capital_multiplier,
         )
 
 
@@ -357,6 +379,18 @@ def _estimated_attr_names_from_config(config_obj: Config) -> list:
     return names
 
 
+def _resolve_capital_multiplier(arg: str) -> str:
+    """
+    Map friendly aliases to a capital multiplier path; otherwise return arg.
+    """
+    aliases = {
+        "fixed": f"{fixed_capital.__module__}.{fixed_capital.__name__}",
+        "full": f"{full_compounding.__module__}.{full_compounding.__name__}",
+        "half": f"{half_compounding.__module__}.{half_compounding.__name__}",
+    }
+    return aliases.get(arg.strip().lower(), arg)
+
+
 def run_backtest(
     backtest_config: BacktestConfig,
     data_factory=dbFuturesSimData,
@@ -366,6 +400,17 @@ def run_backtest(
     Build the system on DB data and print basic metrics.
     Pass BacktestConfig to reuse the flow with other settings without rewriting
     the script.
+
+    If backtest_config.use_db_capital is True, the runner will retrieve
+    notional_trading_capital/base_currency from dataCapital/dataCurrency using
+    backtest_config.strategy_name (default: config filename stem). Otherwise it
+    expects the YAML to provide notional_trading_capital/base_currency.
+    Ensure capital has been populated first (run update_total_capital then
+    update_strategy_capital).
+
+    Optional override: backtest_config.capital_multiplier can be set to one of
+    'fixed' / 'full' / 'half' (or a dotted function path, e.g. syscore.capital.full_compounding)
+    to set config.capital_multiplier.func without editing the YAML.
     """
     cfg = backtest_config.with_defaults()
     logger = logging.getLogger(__name__)
@@ -383,6 +428,34 @@ def run_backtest(
         data = data_factory()
 
         config_obj = Config(str(cfg.config_path))
+        if cfg.use_db_capital:
+            strategy_name = cfg.strategy_name or cfg.config_path.stem
+            capital_data_source = (
+                data if hasattr(data, "add_class_object") else dataBlob()
+            )
+            try:
+                capital_data = dataCapital(capital_data_source)
+                notional_trading_capital = (
+                    capital_data.get_current_capital_for_strategy(strategy_name)
+                )
+            except missingData as err:
+                raise Exception(
+                    f"Capital data is missing for strategy '{strategy_name}': can't run backtest"
+                ) from err
+            base_currency = dataCurrency(capital_data_source).get_base_currency()
+            config_obj.notional_trading_capital = notional_trading_capital
+            config_obj.base_currency = base_currency
+            msg = (
+                f"Using DB capital for {strategy_name}: "
+                f"{base_currency} {notional_trading_capital:,.2f}"
+            )
+            print(msg)
+            logger.info(msg)
+        if cfg.capital_multiplier:
+            cm_func = _resolve_capital_multiplier(cfg.capital_multiplier)
+            config_obj.capital_multiplier = {"func": cm_func}
+            logger.info(f"Applied capital multiplier override: {cm_func}")
+
         config_instruments = list(getattr(config_obj, "instruments", []) or [])
         weights_dict = getattr(config_obj, "instrument_weights", {}) or {}
         weights_instruments = list(weights_dict.keys())
@@ -1545,6 +1618,21 @@ def parse_args(argv=None) -> BacktestConfig:
         help="Fallback spread if missing or zero in the DB.",
     )
     parser.add_argument(
+        "--use-db-capital",
+        action="store_true",
+        help="Pull capital and base currency from the DB (dataCapital/dataCurrency) instead of YAML; run update_total_capital then update_strategy_capital first.",
+    )
+    parser.add_argument(
+        "--capital-multiplier",
+        default=None,
+        help="Override capital compounding: fixed / full / half, or dotted function path (e.g. syscore.capital.full_compounding).",
+    )
+    parser.add_argument(
+        "--strategy-name",
+        default=None,
+        help="Strategy name for DB capital lookup (default: config filename stem).",
+    )
+    parser.add_argument(
         "--instruments",
         default=None,
         help="Comma-separated list of instruments to include (default: all).",
@@ -1618,6 +1706,9 @@ def parse_args(argv=None) -> BacktestConfig:
         use_cache=args.cache,
         cache_file=Path(args.cache_file) if args.cache_file else None,
         cache_compress=not args.no_cache_compress,
+        use_db_capital=args.use_db_capital,
+        strategy_name=args.strategy_name,
+        capital_multiplier=args.capital_multiplier,
     )
 
 
