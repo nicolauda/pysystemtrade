@@ -285,7 +285,9 @@ def resolve_report_filename(
     filename_with_spaces = report_config.title
     filename = filename_with_spaces.replace(" ", "_")
     use_directory = (
-        report_directory if report_directory is not None else get_directory_for_reporting(data)
+        report_directory
+        if report_directory is not None
+        else get_directory_for_reporting(data)
     )
     use_directory_resolved = get_resolved_pathname(use_directory)
     full_filename = os.path.join(use_directory_resolved, filename)
