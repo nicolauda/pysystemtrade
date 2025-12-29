@@ -1,12 +1,14 @@
 from collections import namedtuple
 
-from PyPDF2 import PdfMerger
 import datetime
-import pandas as pd
+from html import escape
 import os
 import shutil
+
+import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
+from PyPDF2 import PdfMerger
 
 from syscore.objects import resolve_function
 from syscore.constants import arg_not_supplied
@@ -23,6 +25,7 @@ from syslogdiag.email_via_db_interface import (
     send_production_mail_msg,
     send_production_mail_msg_attachment,
 )
+from syslogdiag.emailing import MailType
 
 from sysproduction.reporting.report_configs import reportConfig
 
@@ -32,14 +35,22 @@ figure = namedtuple("figure", "pdf_filename")
 
 class ParsedReport(object):
     def __init__(
-        self, text: str = arg_not_supplied, pdf_filename: str = arg_not_supplied
+        self,
+        text: str = arg_not_supplied,
+        pdf_filename: str = arg_not_supplied,
+        html: str = arg_not_supplied,
     ):
         self._text = text
         self._pdf_filename = pdf_filename
+        self._html = html
 
     @property
     def contains_pdf(self) -> bool:
         return self.pdf_filename is not arg_not_supplied
+
+    @property
+    def contains_html(self) -> bool:
+        return self.html is not arg_not_supplied
 
     @property
     def text(self) -> str:
@@ -48,6 +59,10 @@ class ParsedReport(object):
     @property
     def pdf_filename(self) -> str:
         return self._pdf_filename
+
+    @property
+    def html(self) -> str:
+        return self._html
 
 
 def run_report(report_config: reportConfig, data: dataBlob = arg_not_supplied):
@@ -119,19 +134,27 @@ def parse_report_results_contains_text(report_results: list) -> ParsedReport:
     :return: String, with more \n than you can shake a stick at
     """
     output_string = ""
+    html_chunks = []
     for report_item in report_results:
         if isinstance(report_item, header):
             parsed_item = parse_header(report_item)
+            parsed_html = parse_header_html(report_item)
         elif isinstance(report_item, body_text):
             parsed_item = parse_body(report_item)
+            parsed_html = parse_body_html(report_item)
         elif isinstance(report_item, table):
             parsed_item = parse_table(report_item)
+            parsed_html = parse_table_html(report_item)
         else:
             parsed_item = " %s failed to parse in report\n" % str(report_item)
+            parsed_html = parse_body_html(
+                body_text("Failed to parse: %s" % str(report_item))
+            )
 
         output_string = output_string + parsed_item
+        html_chunks.append(parsed_html)
 
-    parsed_report = ParsedReport(text=output_string)
+    parsed_report = ParsedReport(text=output_string, html=wrap_html_report(html_chunks))
 
     return parsed_report
 
@@ -163,6 +186,11 @@ def parse_body(report_body: body_text) -> str:
     return "%s\n" % body_text
 
 
+def parse_body_html(report_body: body_text) -> str:
+    paragraph = escape(str(report_body.Text)).replace("\n", "<br/>")
+    return f'<p class="report-body">{paragraph}</p>'
+
+
 header = namedtuple("header", "Heading")
 
 
@@ -171,6 +199,63 @@ def parse_header(report_header: header) -> str:
     header_text = centralise_text(report_header.Heading, header_line)
 
     return "\n%s\n%s\n%s\n\n\n" % (header_line, header_text, header_line)
+
+
+def parse_header_html(report_header: header) -> str:
+    heading = escape(str(report_header.Heading))
+    return (
+        '<div class="report-section">'
+        f'<div class="report-heading">{heading}</div>'
+        '<hr class="report-divider" />'
+        "</div>"
+    )
+
+
+def parse_table_html(report_table: table) -> str:
+    heading = escape(str(report_table.Heading))
+    body = report_table.Body
+
+    if hasattr(body, "to_html"):
+        try:
+            table_html = body.to_html(classes="report-table", border=0)
+        except Exception:
+            table_html = f"<pre>{escape(str(body))}</pre>"
+    else:
+        table_html = f"<pre>{escape(str(body))}</pre>"
+
+    return (
+        '<div class="report-section">'
+        f'<div class="report-heading">{heading}</div>'
+        f"{table_html}"
+        "</div>"
+    )
+
+
+def wrap_html_report(html_chunks: list[str]) -> str:
+    body = "\n".join(html_chunks)
+    return f"""<html>
+<head>
+{HTML_REPORT_STYLE}
+</head>
+<body>
+{body}
+</body>
+</html>"""
+
+
+HTML_REPORT_STYLE = """
+<style>
+body { font-family: Arial, sans-serif; color: #1c1c1c; background: #ffffff; }
+.report-section { margin-bottom: 18px; }
+.report-heading { font-size: 18px; font-weight: bold; margin: 0 0 6px 0; }
+.report-divider { border: 0; border-top: 1px solid #cccccc; margin: 6px 0 12px 0; }
+.report-body { margin: 0 0 12px 0; line-height: 1.5; }
+.report-table { border-collapse: collapse; width: 100%; font-family: monospace; }
+.report-table th, .report-table td { border: 1px solid #dddddd; padding: 6px 8px; text-align: right; }
+.report-table th { background: #f3f3f3; text-align: left; }
+.report-table td:first-child { text-align: left; }
+</style>
+"""
 
 
 def parse_report_results_contains_figures(
@@ -250,11 +335,16 @@ def email_report(
             filename=parsed_report.pdf_filename,
         )
     else:
+        email_body = (
+            parsed_report.html if parsed_report.contains_html else parsed_report.text
+        )
+        mail_type = MailType.html if parsed_report.contains_html else MailType.plain
         send_production_mail_msg(
             data=data,
-            body=parsed_report.text,
+            body=email_body,
             subject=report_config.title,
             email_is_report=True,
+            mail_type=mail_type,
         )
 
 

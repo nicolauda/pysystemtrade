@@ -5,7 +5,7 @@ from syscore.dateutils import SECONDS_PER_DAY
 from syscore.exceptions import missingData
 from syslogdiag.mongo_email_control import mongoEmailControlData
 
-from syslogdiag.emailing import send_mail_msg, send_mail_pdfs
+from syslogdiag.emailing import MailType, send_mail_msg, send_mail_pdfs
 
 from syscore.fileutils import resolve_path_and_filename_for_package
 from syscore.interactive.display import landing_strip
@@ -19,7 +19,13 @@ def send_production_mail_msg_attachment(body: str, subject: str, filename: str):
     send_mail_pdfs(body, subject=subject, filelist=[filename])
 
 
-def send_production_mail_msg(data, body: str, subject: str, email_is_report=False):
+def send_production_mail_msg(
+    data,
+    body: str,
+    subject: str,
+    email_is_report: bool = False,
+    mail_type: MailType = MailType.plain,
+):
     """
     Sends an email of particular text file with subject line
     After checking that we aren't sending too many emails per day
@@ -31,7 +37,11 @@ def send_production_mail_msg(data, body: str, subject: str, email_is_report=Fals
 
     if send_email:
         send_email_and_record_date_or_store_on_fail(
-            data, body, subject, email_is_report=email_is_report
+            data,
+            body,
+            subject,
+            email_is_report=email_is_report,
+            mail_type=mail_type,
         )
     else:
         # won't send an email to avoid clogging up the inbox
@@ -41,10 +51,14 @@ def send_production_mail_msg(data, body: str, subject: str, email_is_report=Fals
 
 
 def send_email_and_record_date_or_store_on_fail(
-    data, body: str, subject: str, email_is_report: bool = False
+    data,
+    body: str,
+    subject: str,
+    email_is_report: bool = False,
+    mail_type: MailType = MailType.plain,
 ):
     try:
-        send_mail_msg(body, subject)
+        send_mail_msg(body, subject, mail_type=mail_type)
         record_date_of_email_send(data, subject)
         data.log.debug("Sent email subject %s" % subject)
     except Exception as e:
