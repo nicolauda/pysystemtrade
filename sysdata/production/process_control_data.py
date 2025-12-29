@@ -36,9 +36,10 @@ class controlProcessData(baseData):
         try:
             control = self._get_control_for_process_name_without_default(process_name)
         except missingData:
-            return controlProcess()
-        else:
-            return control
+            control = controlProcess()
+            # Persist default control so it appears in listings / menus
+            self._add_control_for_process_name(process_name, control)
+        return control
 
     def _get_control_for_process_name_without_default(
         self, process_name

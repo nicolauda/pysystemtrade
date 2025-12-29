@@ -689,6 +689,7 @@ def modify_roll_state(
     original_roll_state: RollState,
     roll_state_required: RollState,
     confirm_adjusted_price_change: bool = True,
+    allow_forward_fill_without_prompt: bool = False,
 ):
     roll_state_is_unchanged = (roll_state_required is no_change_required) or (
         roll_state_required is original_roll_state
@@ -711,6 +712,7 @@ def modify_roll_state(
             instrument_code=instrument_code,
             original_roll_state=original_roll_state,
             confirm_adjusted_price_change=confirm_adjusted_price_change,
+            allow_forward_fill_without_prompt=allow_forward_fill_without_prompt,
         )
 
     ## Following roll states require trading: force, forceoutright, close
@@ -740,6 +742,7 @@ def state_change_to_roll_adjusted_prices(
     instrument_code: str,
     original_roll_state: RollState,
     confirm_adjusted_price_change: bool = True,
+    allow_forward_fill_without_prompt: bool = False,
 ):
     # Going to roll adjusted prices
     update_positions = updatePositions(data)
@@ -748,6 +751,7 @@ def state_change_to_roll_adjusted_prices(
         data=data,
         instrument_code=instrument_code,
         confirm_adjusted_price_change=confirm_adjusted_price_change,
+        allow_forward_fill_without_prompt=allow_forward_fill_without_prompt,
     )
 
     if roll_result is success:
@@ -767,7 +771,10 @@ def state_change_to_roll_adjusted_prices(
 
 
 def roll_adjusted_and_multiple_prices(
-    data: dataBlob, instrument_code: str, confirm_adjusted_price_change: bool = True
+    data: dataBlob,
+    instrument_code: str,
+    confirm_adjusted_price_change: bool = True,
+    allow_forward_fill_without_prompt: bool = False,
 ) -> status:
     """
     Roll multiple and adjusted prices
@@ -783,7 +790,9 @@ def roll_adjusted_and_multiple_prices(
     print("Rolling adjusted prices!")
     print("")
     rolling_adj_and_mult_object = get_roll_adjusted_multiple_prices_object(
-        data=data, instrument_code=instrument_code
+        data=data,
+        instrument_code=instrument_code,
+        allow_forward_fill_without_prompt=allow_forward_fill_without_prompt,
     )
     if rolling_adj_and_mult_object is failure:
         print("Error when trying to calculate roll prices")
@@ -820,6 +829,7 @@ def roll_adjusted_and_multiple_prices(
 def get_roll_adjusted_multiple_prices_object(
     data: dataBlob,
     instrument_code: str,
+    allow_forward_fill_without_prompt: bool = False,
 ) -> rollingAdjustedAndMultiplePrices:
     ## returns failure if goes wrong
     try:
@@ -835,7 +845,9 @@ def get_roll_adjusted_multiple_prices_object(
         ## Possibly forward fill
         rolling_adj_and_mult_object = (
             _get_roll_adjusted_multiple_prices_object_ffill_option(
-                data, instrument_code
+                data,
+                instrument_code,
+                auto_forward_fill_without_prompt=allow_forward_fill_without_prompt,
             )
         )
 
@@ -843,12 +855,20 @@ def get_roll_adjusted_multiple_prices_object(
 
 
 def _get_roll_adjusted_multiple_prices_object_ffill_option(
-    data: dataBlob, instrument_code: str
+    data: dataBlob,
+    instrument_code: str,
+    auto_forward_fill_without_prompt: bool = False,
 ) -> rollingAdjustedAndMultiplePrices:
     ## returns failure if goes wrong
-    try_forward_fill = true_if_answer_is_yes(
-        "Do you want to try forward filling prices first (less accurate, but guarantees roll)? [y/n]"
-    )
+    if auto_forward_fill_without_prompt:
+        print_with_landing_strips_around(
+            "AUTO ROLLING - Trying forward fill for %s before rolling" % instrument_code
+        )
+        try_forward_fill = True
+    else:
+        try_forward_fill = true_if_answer_is_yes(
+            "Do you want to try forward filling prices first (less accurate, but guarantees roll)? [y/n]"
+        )
 
     if not try_forward_fill:
         print("OK, nothing I can do")

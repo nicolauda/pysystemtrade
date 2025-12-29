@@ -39,6 +39,7 @@ class dataControlProcess(productionDataLayerGeneric):
         self.db_control_process_data.delete_control_for_process_name(process_name)
 
     def get_dict_of_control_processes(self):
+        self._ensure_all_configured_processes_exist()
         return self.db_control_process_data.get_dict_of_control_processes()
 
     def check_if_okay_to_start_process(self, process_name: str) -> named_object:
@@ -112,6 +113,18 @@ class dataControlProcess(productionDataLayerGeneric):
 
     def change_status_to_pause(self, process_name: str):
         self.db_control_process_data.change_status_to_pause(process_name)
+
+    def _ensure_all_configured_processes_exist(self):
+        """
+        Make sure every process defined in control config has a control entry.
+        This lets new processes show up in monitoring menus before their first run.
+        """
+        diag_process = diagControlProcess(self.data)
+        configured_processes = diag_process.get_process_configuration_for_item_name(
+            "methods"
+        ).keys()
+        for process_name in configured_processes:
+            _ = self.db_control_process_data.get_control_for_process_name(process_name)
 
     def has_process_finished_in_last_day(self, process_name: str) -> bool:
         has_it_finished_in_last_day = (
