@@ -9,9 +9,7 @@ def run_update_roll_status():
     list_of_timer_names_and_functions = get_list_of_timer_functions_for_roll_update(
         data
     )
-    roll_process = processToRun(
-        process_name, data, list_of_timer_names_and_functions
-    )
+    roll_process = processToRun(process_name, data, list_of_timer_names_and_functions)
     roll_process.run_process()
 
 
