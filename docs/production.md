@@ -263,7 +263,7 @@ You need to:
         - MONGO_DATA=/home/user_name/data/mongodb/
         - PYSYS_CODE=/home/user_name/pysystemtrade
         - SCRIPT_PATH=/home/user_name/pysystemtrade/sysproduction/linux/scripts
-        - ECHO_PATH=/home/user_name/echos
+        - ECHO_PATH=/home/user_name/echos (dedicate this directory to pysystemtrade echo files only; unrelated files here will crash the system)
         - MONGO_BACKUP_PATH=/media/shared_network/drive/mongo_backup
     - Add the SCRIPT_PATH directory to your PATH
     - Create the following directories (again use other directories if you like, but you must modify the .profile above and specify the proper directories in `private_config.yaml`)
@@ -703,6 +703,8 @@ ECHO_PATH="$HOME:/echos"
 ```
 
 The above line will run the script `updatefxprices`, but instead of outputting the results to stdout they will go to `updatefxprices.txt`. These echo files are most useful when processes crash, in which case you may want to examine the stack trace. Usually however the log files will be more useful.
+
+Keep `$ECHO_PATH` dedicated to echo files produced by pysystemtrade modules. If other files or subdirectories are present in the echo directory, the production scripts can crash.
 
 #### Cleaning old echo files
 

@@ -34,7 +34,7 @@ Define these early (add to your shell profile), adjusting paths to taste:
 - `MONGO_DATA=/home/you/data/mongodb` (Mongo dbpath)
 - `PYSYS_CODE=/home/you/pysystemtrade` (repo root)
 - `SCRIPT_PATH=/home/you/pysystemtrade/sysproduction/linux/scripts` (for cron wrappers)
-- `ECHO_PATH=/home/you/echos` (echo/log output)
+- `ECHO_PATH=/home/you/echos` (echo/log output; keep only pysystemtrade echo files here or cron jobs will crash)
 - `MONGO_BACKUP_PATH=/home/you/data/mongo_dump` (Mongo dumps)
 - `PYSYS_PRIVATE_CONFIG_DIR=/home/you/private` (optional, if private config is outside the repo)
 
