@@ -23,6 +23,8 @@ import contextlib
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from collections import defaultdict
+import math
 import io
 import logging
 import warnings
@@ -260,6 +262,12 @@ class BacktestResult:
     summary_rows: list
     per_inst_rows: list
     per_rule_rows: list
+    per_rule_headers: list
+    rule_variation_rows: list
+    rule_variation_headers: list
+    rule_correlation_rows: list
+    rule_correlation_headers: list
+    per_inst_headers: list
     cost_rows: list
     notional_rows: list
     trades_rows: list
@@ -541,16 +549,39 @@ def run_backtest(
         rolling_std = portfolio.rolling_ann_std()
         _safe_tail_print(rolling_std, 5)
 
+        base_currency = getattr(config_obj, "base_currency", "")
+
         print("\nPerformance per instrument (net % returns):")
-        per_inst_rows = _print_per_instrument_perf(
+        per_inst_rows, per_inst_headers = _print_per_instrument_perf(
             portfolio,
             instrument_filter=instrument_list,
         )
 
-        print(
-            "\nPerformance per strategy/rule (net % returns, scaled to portfolio capital):"
-        )
-        per_rule_rows = _print_per_strategy_perf(system, portfolio)
+        try:
+            rule_perf_tables = _collect_rule_performance_tables(
+                system,
+                portfolio,
+                base_currency=base_currency,
+                verbose=True,
+            )
+        except Exception as err:
+            print(f"Rule-level performance skipped ({err})")
+            rule_perf_tables = {
+                "group_rows": [],
+                "group_headers": [],
+                "variation_rows": [],
+                "variation_headers": [],
+                "correlation_rows": [],
+                "correlation_headers": [],
+                "group_curves": {},
+            }
+        per_rule_rows = rule_perf_tables["group_rows"]
+        per_rule_headers = rule_perf_tables["group_headers"]
+        rule_variation_rows = rule_perf_tables["variation_rows"]
+        rule_variation_headers = rule_perf_tables["variation_headers"]
+        rule_correlation_rows = rule_perf_tables["correlation_rows"]
+        rule_correlation_headers = rule_perf_tables["correlation_headers"]
+        rule_group_curves = rule_perf_tables["group_curves"]
 
         print("\nRecent notional positions per instrument (last 3):")
         for inst in instruments_for_output:
@@ -573,6 +604,10 @@ def run_backtest(
             figures["buffered_positions"] = (
                 results_dir / f"buffered_positions_{timestamp}.png"
             )
+            if rule_group_curves:
+                figures["rule_groups"] = (
+                    results_dir / f"rule_groups_{timestamp}.png"
+                )
 
             _plot_series(curve, figures["equity"], title="Equity curve")
             _plot_series(drawdown, figures["drawdown"], title="Drawdown")
@@ -597,6 +632,13 @@ def run_backtest(
                 instruments_for_output,
                 clip_bounds=None,
             )
+            if rule_group_curves:
+                _plot_multiple_series(
+                    rule_group_curves,
+                    figures["rule_groups"],
+                    title="P&L aggregato per funzione di trading rule",
+                    ylabel=f"P&L {base_currency}".strip(),
+                )
 
         qs_html = (
             results_dir / f"backtest_report_qs_{timestamp}.html"
@@ -612,6 +654,30 @@ def run_backtest(
         per_rule_rows = (
             sorted(per_rule_rows, key=lambda r: r[0]) if per_rule_rows else []
         )
+        rule_variation_rows = (
+            sorted(rule_variation_rows, key=lambda r: r[0])
+            if rule_variation_rows
+            else []
+        )
+        per_inst_headers = per_inst_headers or [
+            "Name",
+            "Total",
+            "CAGR",
+            "Vol",
+            "Sharpe",
+            "MaxDD",
+        ]
+        per_rule_headers = per_rule_headers or [
+            "Name",
+            "Total",
+            "CAGR",
+            "Vol",
+            "Sharpe",
+            "MaxDD",
+        ]
+        rule_variation_headers = rule_variation_headers or per_rule_headers
+        rule_correlation_rows = rule_correlation_rows or []
+        rule_correlation_headers = rule_correlation_headers or []
         cost_rows = _build_spread_cost_rows(
             spread_costs_used, spread_costs_missing, instruments_for_output
         )
@@ -623,13 +689,13 @@ def run_backtest(
             system,
             instrument_filter=instruments_for_output,
             max_rows=200,
-            base_currency=getattr(config_obj, "base_currency", ""),
+            base_currency=base_currency,
         )
 
         summary_rows = _build_summary_rows(
             stats,
             portfolio,
-            base_currency=getattr(config_obj, "base_currency", ""),
+            base_currency=base_currency,
         )
 
         pdf_path = (
@@ -653,6 +719,12 @@ def run_backtest(
                 notional_rows=notional_rows,
                 trades_rows=trades_rows,
                 figure_paths=list(figures.values()),
+                per_inst_headers=per_inst_headers,
+                per_rule_headers=per_rule_headers,
+                rule_variation_rows=rule_variation_rows,
+                rule_variation_headers=rule_variation_headers,
+                rule_correlation_rows=rule_correlation_rows,
+                rule_correlation_headers=rule_correlation_headers,
             )
 
         if cfg.include_report_txt:
@@ -664,6 +736,12 @@ def run_backtest(
                 cost_rows=cost_rows,
                 notional_rows=notional_rows,
                 trades_rows=trades_rows,
+                per_inst_headers=per_inst_headers,
+                per_rule_headers=per_rule_headers,
+                rule_variation_rows=rule_variation_rows,
+                rule_variation_headers=rule_variation_headers,
+                rule_correlation_rows=rule_correlation_rows,
+                rule_correlation_headers=rule_correlation_headers,
             )
 
         if cfg.include_plots and not cfg.keep_intermediate_figs:
@@ -731,6 +809,12 @@ def run_backtest(
             summary_rows=summary_rows,
             per_inst_rows=per_inst_rows,
             per_rule_rows=per_rule_rows,
+            per_rule_headers=per_rule_headers,
+            rule_variation_rows=rule_variation_rows,
+            rule_variation_headers=rule_variation_headers,
+            rule_correlation_rows=rule_correlation_rows,
+            rule_correlation_headers=rule_correlation_headers,
+            per_inst_headers=per_inst_headers,
             cost_rows=cost_rows,
             notional_rows=notional_rows,
             trades_rows=trades_rows,
@@ -800,6 +884,47 @@ def _plot_series(series: Any, path: Optional[Path], title: str = ""):
         print(f"Saved plot: {path}")
     except Exception as err:
         print(f"Plot skipped ({err})")
+
+
+def _plot_multiple_series(
+    series_dict: dict, path: Optional[Path], title: str = "", ylabel: str = ""
+):
+    """
+    Plot multiple series on the same axes (used for aggregated rule variations).
+    """
+    if path is None:
+        return
+    if not series_dict:
+        return
+    try:
+        import matplotlib.pyplot as plt
+
+        _set_matplotlib_font_defaults()
+
+        plt.figure(figsize=(12, 6))
+        plotted = 0
+        for name, series in series_dict.items():
+            s = _clean_series(series)
+            if s.empty:
+                continue
+            plt.plot(s.index, s.values, label=name)
+            plotted += 1
+
+        if plotted == 0:
+            plt.close()
+            return
+
+        plt.title(title or path.name)
+        plt.xlabel("Date")
+        if ylabel:
+            plt.ylabel(ylabel)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(path)
+        plt.close()
+        print(f"Saved plot: {path}")
+    except Exception as err:
+        print(f"Aggregated rule plot skipped ({err})")
 
 
 def _quantstats_report(returns: Any, output_path: Optional[Path]):
@@ -1002,6 +1127,20 @@ def _compute_return_stats(returns_pct: pd.Series, periods_per_year: int = 252) -
     ann_return = np.expm1(log_returns.mean() * periods_per_year)
     vol = returns.std(ddof=0) * np.sqrt(periods_per_year)
     sharpe = ann_return / vol if vol > 0 else np.nan
+    t_stat = np.nan
+    p_value = np.nan
+    if n > 1:
+        mean_return = returns.mean()
+        sample_std = returns.std(ddof=1)
+        if sample_std > 0:
+            t_stat = mean_return / (sample_std / math.sqrt(n))
+            try:
+                from scipy import stats
+
+                p_value = float(stats.t.sf(abs(t_stat), df=n - 1) * 2.0)
+            except Exception:
+                # Fallback to normal approximation
+                p_value = float(math.erfc(abs(t_stat) / math.sqrt(2)))
 
     peak = cumulative.cummax()
     dd = cumulative / peak - 1.0
@@ -1013,7 +1152,42 @@ def _compute_return_stats(returns_pct: pd.Series, periods_per_year: int = 252) -
         vol=vol,
         sharpe=sharpe,
         max_dd=max_dd,
+        t_stat=t_stat,
+        p_value=p_value,
     )
+
+
+def _group_rules_by_function(system) -> dict:
+    """
+    Build a mapping {rule_function: [rule_variations]} using the underlying
+    trading rule function to aggregate variations of the same idea.
+    """
+    groups: dict[str, list] = defaultdict(list)
+    try:
+        trading_rules = system.rules.trading_rules()
+    except Exception:
+        trading_rules = {}
+
+    for rule_name, rule_obj in trading_rules.items():
+        func = getattr(rule_obj, "function", None)
+        func_name = getattr(func, "__name__", "") or str(func)
+        module_name = getattr(func, "__module__", "")
+        base_module = module_name.split(".")[-1] if module_name else ""
+        group_key = func_name
+        if base_module:
+            group_key = f"{base_module}.{func_name}"
+        group_key = group_key or rule_name
+        groups[group_key].append(rule_name)
+
+    # Fallback: if nothing resolved, treat each rule as its own group
+    if not groups and hasattr(system.accounts, "list_of_trading_rules"):
+        try:
+            for rule_name in system.accounts.list_of_trading_rules():
+                groups[rule_name].append(rule_name)
+        except Exception:
+            pass
+
+    return {k: sorted(v) for k, v in sorted(groups.items())}
 
 
 def _collect_notional_positions_by_year(
@@ -1145,36 +1319,82 @@ def _format_pct(x: float) -> str:
     return f"{100 * x:,.2f}%"
 
 
-def _print_perf_table(title: str, rows: list, verbose: bool = True):
+def _format_ccy(x: float, base_currency: str = "") -> str:
+    try:
+        if x is None or np.isnan(x):
+            return "-"
+        return f"{float(x):,.2f} {base_currency}".strip()
+    except Exception:
+        return "-"
+
+
+def _format_number(x: float, decimals: int = 2) -> str:
+    try:
+        if x is None or np.isnan(x):
+            return "-"
+        return f"{float(x):.{decimals}f}"
+    except Exception:
+        return "-"
+
+
+def _format_p_value(x: float) -> str:
+    try:
+        if x is None or np.isnan(x):
+            return "-"
+        if x < 0.001:
+            return "<0.001"
+        return f"{float(x):.3f}"
+    except Exception:
+        return "-"
+
+
+def _print_perf_table(
+    title: str,
+    rows: list,
+    verbose: bool = True,
+    include_significance: bool = False,
+    include_pnl: bool = False,
+    base_currency: str = "",
+):
     if not rows:
         if verbose:
             print(f"{title}: (no data)")
-        return []
-    col_names = ["Name", "Total", "CAGR", "Vol", "Sharpe", "MaxDD"]
+        return [], []
+    col_names = ["Name"]
+    if include_pnl:
+        col_names.append("P&L")
+    col_names += ["Total", "CAGR", "Vol", "Sharpe", "MaxDD"]
+    if include_significance:
+        col_names += ["t-stat", "p-value"]
     if verbose:
         print(title)
-        print(
-            f"{col_names[0]:<25} {col_names[1]:>12} {col_names[2]:>12} {col_names[3]:>12} {col_names[4]:>8} {col_names[5]:>12}"
-        )
+        print(" | ".join(col_names))
     printable = []
     for name, stats in rows:
         row = [
             name,
-            _format_pct(stats.get("total_return", np.nan)),
-            _format_pct(stats.get("ann_return", np.nan)),
-            _format_pct(stats.get("vol", np.nan)),
-            f"{stats.get('sharpe', np.nan):.2f}"
-            if not np.isnan(stats.get("sharpe", np.nan))
-            else "-",
-            _format_pct(stats.get("max_dd", np.nan)),
         ]
+        if include_pnl:
+            row.append(_format_ccy(stats.get("pnl", np.nan), base_currency))
+        row.extend(
+            [
+                _format_pct(stats.get("total_return", np.nan)),
+                _format_pct(stats.get("ann_return", np.nan)),
+                _format_pct(stats.get("vol", np.nan)),
+                f"{stats.get('sharpe', np.nan):.2f}"
+                if not np.isnan(stats.get("sharpe", np.nan))
+                else "-",
+                _format_pct(stats.get("max_dd", np.nan)),
+            ]
+        )
+        if include_significance:
+            row.append(_format_number(stats.get("t_stat", np.nan)))
+            row.append(_format_p_value(stats.get("p_value", np.nan)))
         printable.append(row)
         if verbose:
-            print(
-                f"{row[0]:<25} {row[1]:>12} {row[2]:>12} {row[3]:>12} {row[4]:>8} {row[5]:>12}"
-            )
+            print(" | ".join(row))
 
-    return printable
+    return printable, col_names
 
 
 def _print_per_instrument_perf(
@@ -1193,27 +1413,151 @@ def _print_per_instrument_perf(
     except Exception as err:
         if verbose:
             print(f"Per-instrument stats skipped ({err})")
-        return []
+        return [], []
 
 
-def _print_per_strategy_perf(system, portfolio, verbose: bool = True):
+def _print_per_strategy_perf(
+    system, portfolio, base_currency: str = "", verbose: bool = True
+):
     try:
         rules_group = system.accounts.pandl_for_all_trading_rules()
         rules_group = rules_group.value_terms  # P&L in currency per rule
-        capital = portfolio.capital
+        capital = pd.Series(portfolio.capital).astype(float)
         rows = []
+        returns_df = {}
+        pnl_by_rule = {}
         for rule in rules_group.asset_columns:
             rule_curve = rules_group[rule]
             pnl = pd.Series(rule_curve.as_ts).astype(float)
-            cap = pd.Series(capital).astype(float).reindex(pnl.index).ffill()
+            pnl_by_rule[rule] = pnl
+            cap = capital.reindex(pnl.index).ffill()
             returns_pct = (pnl / cap) * 100.0
             stats = _compute_return_stats(returns_pct)
+            stats["pnl"] = pnl.sum()
+            returns_df[rule] = returns_pct
             rows.append((rule, stats))
-        return _print_perf_table("Per strategy/rule", rows, verbose=verbose)
+        table_rows, headers = _print_perf_table(
+            "Performance per rule variation (net % returns, scaled to portfolio capital):",
+            rows,
+            verbose=verbose,
+            include_significance=True,
+            include_pnl=True,
+            base_currency=base_currency,
+        )
+        returns_df = pd.DataFrame(returns_df)
+        return table_rows, headers, returns_df, pnl_by_rule, capital
     except Exception as err:
         if verbose:
             print(f"Per-strategy stats skipped ({err})")
-        return []
+        return [], [], pd.DataFrame(), {}, pd.Series(dtype=float)
+
+
+def _build_rule_group_perf(
+    system,
+    pnl_by_rule: dict,
+    capital_series: pd.Series,
+    base_currency: str = "",
+    verbose: bool = True,
+):
+    groups = _group_rules_by_function(system)
+    if not groups:
+        groups = {rule_name: [rule_name] for rule_name in pnl_by_rule.keys()}
+
+    rows = []
+    group_curves = {}
+    for group_name, rule_names in groups.items():
+        group_pnl = None
+        for rule in rule_names:
+            pnl = pnl_by_rule.get(rule)
+            if pnl is None or pnl.empty:
+                continue
+            group_pnl = pnl if group_pnl is None else group_pnl.add(pnl, fill_value=0.0)
+        if group_pnl is None or group_pnl.empty:
+            continue
+        group_pnl = group_pnl.sort_index()
+        group_curves[group_name] = group_pnl.cumsum().ffill()
+
+        cap = capital_series.reindex(group_pnl.index).ffill()
+        returns_pct = (group_pnl / cap) * 100.0
+        stats = _compute_return_stats(returns_pct)
+        stats["pnl"] = group_pnl.sum()
+        rows.append((group_name, stats))
+
+    table_rows, headers = _print_perf_table(
+        "Performance aggregata per rule (somma delle variations):",
+        rows,
+        verbose=verbose,
+        include_significance=True,
+        include_pnl=True,
+        base_currency=base_currency,
+    )
+
+    return table_rows, headers, group_curves
+
+
+def _build_correlation_table(returns_df: pd.DataFrame):
+    if returns_df is None or returns_df.empty or returns_df.shape[1] < 2:
+        return [], []
+    clean = returns_df.dropna(how="all")
+    if clean.empty or clean.shape[1] < 2:
+        return [], []
+
+    corr = clean.corr()
+    headers = ["Strategy"] + list(corr.columns)
+    rows = []
+    for idx, row in corr.iterrows():
+        formatted = [
+            "-" if pd.isna(val) else _format_number(val, decimals=3)
+            for val in row.values
+        ]
+        rows.append([idx] + formatted)
+    return rows, headers
+
+
+def _print_correlation_table(title: str, headers: list, rows: list, verbose: bool):
+    if not verbose:
+        return
+    if not rows:
+        print(f"{title}: (no data)")
+        return
+    print(title)
+    print(" | ".join(headers))
+    for row in rows:
+        print(" | ".join(row))
+
+
+def _collect_rule_performance_tables(
+    system, portfolio, base_currency: str = "", verbose: bool = True
+):
+    var_rows, var_headers, returns_df, pnl_by_rule, capital_series = (
+        _print_per_strategy_perf(
+            system, portfolio, base_currency=base_currency, verbose=verbose
+        )
+    )
+    group_rows, group_headers, group_curves = _build_rule_group_perf(
+        system,
+        pnl_by_rule,
+        capital_series,
+        base_currency=base_currency,
+        verbose=verbose,
+    )
+    corr_rows, corr_headers = _build_correlation_table(returns_df)
+    _print_correlation_table(
+        "\nCorrelazione tra strategie/rule (returns percentuali)",
+        corr_headers,
+        corr_rows,
+        verbose=verbose,
+    )
+
+    return dict(
+        group_rows=group_rows,
+        group_headers=group_headers,
+        variation_rows=var_rows,
+        variation_headers=var_headers,
+        correlation_rows=corr_rows,
+        correlation_headers=corr_headers,
+        group_curves=group_curves,
+    )
 
 
 def _build_spread_cost_rows(
@@ -1425,11 +1769,38 @@ def _build_unified_pdf(
     notional_rows: list,
     trades_rows: list,
     figure_paths: list,
+    per_inst_headers: Optional[list] = None,
+    per_rule_headers: Optional[list] = None,
+    rule_variation_rows: Optional[list] = None,
+    rule_variation_headers: Optional[list] = None,
+    rule_correlation_rows: Optional[list] = None,
+    rule_correlation_headers: Optional[list] = None,
 ):
     try:
         import matplotlib.pyplot as plt
         from matplotlib.backends.backend_pdf import PdfPages
         import matplotlib.image as mpimg
+
+        per_inst_labels = per_inst_headers or [
+            "Name",
+            "Total",
+            "CAGR",
+            "Vol",
+            "Sharpe",
+            "MaxDD",
+        ]
+        per_rule_labels = per_rule_headers or [
+            "Name",
+            "Total",
+            "CAGR",
+            "Vol",
+            "Sharpe",
+            "MaxDD",
+        ]
+        rule_variation_rows = rule_variation_rows or []
+        rule_variation_labels = rule_variation_headers or per_rule_labels
+        rule_correlation_rows = rule_correlation_rows or []
+        rule_correlation_labels = rule_correlation_headers or []
 
         with PdfPages(output_path) as pdf:
             if summary_rows:
@@ -1446,7 +1817,7 @@ def _build_unified_pdf(
                 _add_table_pages(
                     pdf,
                     per_inst_rows,
-                    ["Name", "Total", "CAGR", "Vol", "Sharpe", "MaxDD"],
+                    per_inst_labels,
                     "Performance per instrument (net % returns)",
                     rows_per_page=25,
                 )
@@ -1455,8 +1826,17 @@ def _build_unified_pdf(
                 _add_table_pages(
                     pdf,
                     per_rule_rows,
-                    ["Name", "Total", "CAGR", "Vol", "Sharpe", "MaxDD"],
-                    "Performance per strategy/rule (net % returns)",
+                    per_rule_labels,
+                    "Performance per rule (aggregated variations)",
+                    rows_per_page=20,
+                )
+
+            if rule_variation_rows:
+                _add_table_pages(
+                    pdf,
+                    rule_variation_rows,
+                    rule_variation_labels,
+                    "Performance per rule variation",
                     rows_per_page=20,
                 )
 
@@ -1498,6 +1878,15 @@ def _build_unified_pdf(
                     col_widths=[0.12, 0.14, 0.08, 0.08, 0.18, 0.12, 0.14, 0.14],
                 )
 
+            if rule_correlation_rows and rule_correlation_labels:
+                _add_table_pages(
+                    pdf,
+                    rule_correlation_rows,
+                    rule_correlation_labels,
+                    "Correlazione tra strategie/rule",
+                    rows_per_page=25,
+                )
+
             for fig_path in figure_paths:
                 if fig_path is None:
                     continue
@@ -1524,6 +1913,12 @@ def _write_report_txt(
     cost_rows: list,
     notional_rows: list,
     trades_rows: list,
+    per_inst_headers: Optional[list] = None,
+    per_rule_headers: Optional[list] = None,
+    rule_variation_rows: Optional[list] = None,
+    rule_variation_headers: Optional[list] = None,
+    rule_correlation_rows: Optional[list] = None,
+    rule_correlation_headers: Optional[list] = None,
 ):
     """
     Write a plain-text summary for easier debugging.
@@ -1540,6 +1935,27 @@ def _write_report_txt(
             sections.append(" | ".join(row))
         sections.append("")  # blank line between tables
 
+    per_inst_labels = per_inst_headers or [
+        "Name",
+        "Total",
+        "CAGR",
+        "Vol",
+        "Sharpe",
+        "MaxDD",
+    ]
+    per_rule_labels = per_rule_headers or [
+        "Name",
+        "Total",
+        "CAGR",
+        "Vol",
+        "Sharpe",
+        "MaxDD",
+    ]
+    rule_variation_rows = rule_variation_rows or []
+    rule_variation_labels = rule_variation_headers or per_rule_labels
+    rule_correlation_rows = rule_correlation_rows or []
+    rule_correlation_labels = rule_correlation_headers or []
+
     add_table(
         "Summary",
         summary_rows,
@@ -1548,12 +1964,22 @@ def _write_report_txt(
     add_table(
         "Performance per instrument",
         per_inst_rows,
-        ["Name", "Total", "CAGR", "Vol", "Sharpe", "MaxDD"],
+        per_inst_labels,
     )
     add_table(
-        "Performance per strategy/rule",
+        "Performance per rule (aggregated variations)",
         per_rule_rows,
-        ["Name", "Total", "CAGR", "Vol", "Sharpe", "MaxDD"],
+        per_rule_labels,
+    )
+    add_table(
+        "Performance per rule variation",
+        rule_variation_rows,
+        rule_variation_labels,
+    )
+    add_table(
+        "Correlazione tra strategie/rule",
+        rule_correlation_rows,
+        rule_correlation_labels,
     )
     add_table("Spread costs used", cost_rows, ["Instrument", "Source", "Spread"])
     add_table(
