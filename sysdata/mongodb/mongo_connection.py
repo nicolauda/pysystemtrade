@@ -187,6 +187,8 @@ class mongoConnection(object):
             self.collection.create_index([(indexname, order)], unique=True)
 
     def create_compound_index(self, index_config: dict):
+        # Work on a copy to avoid mutating shared configs (globals are reused)
+        index_config = copy(index_config)
         name_parts = []
         key_tuples = []
         keys = index_config.pop("keys")
