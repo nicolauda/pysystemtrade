@@ -218,7 +218,7 @@ class pandlCalculateAndStore(object):
             self.data, instrument_code, self.start_date, self.end_date
         )
 
-        pandl_df = pandl_df_all_data[self.start_date : self.end_date]
+        pandl_df = self._slice_pandl_df_for_date_range(pandl_df_all_data)
 
         return pandl_df
 
@@ -231,7 +231,7 @@ class pandlCalculateAndStore(object):
         except missingData:
             return 0.0
 
-        pandl_df = pandl_df[self.start_date : self.end_date]
+        pandl_df = self._slice_pandl_df_for_date_range(pandl_df)
         pandl_series = pandl_df.sum(axis=1, skipna=True)
         pandl_series = pandl_series.dropna()
 
@@ -305,6 +305,27 @@ class pandlCalculateAndStore(object):
             store = {}
             setattr(self, "_strategy_pandl_store", store)
         return store
+
+    def _slice_pandl_df_for_date_range(self, pandl_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Align the requested date window to the available data so we don't return
+        empty slices when the latest prices/positions are behind the requested end.
+        """
+        if len(pandl_df.index) == 0:
+            return pandl_df
+
+        data_last_date = min(self.end_date, pandl_df.index.max())
+        requested_window = self.end_date - self.start_date
+
+        if self.start_date > data_last_date:
+            effective_start_date = data_last_date - requested_window
+        else:
+            effective_start_date = self.start_date
+
+        data_first_date = pandl_df.index.min()
+        effective_start_date = max(effective_start_date, data_first_date)
+
+        return pandl_df[effective_start_date:data_last_date]
 
 
 def get_df_of_perc_pandl_series_for_instrument_all_strategies_across_contracts_in_date_range(
