@@ -1,22 +1,25 @@
-"""
+"""backtest_runner_reportlab.py
+
 Core routines for running a futures backtest using DB data (Mongo + Parquet)
 via `dbFuturesSimData`, so you match what production will read.
 
-Naming convention for zero-config runs:
-- If your entrypoint is named <name>_backtest.py in some folder, and you place
-  a <name>_config.yaml in the same folder, the runner will auto-discover it.
-- Otherwise, you must pass --config (or set BacktestConfig.config_path).
+This version fixes PDF table layout issues by rendering the unified PDF with
+**ReportLab (Platypus)** (real layout engine), instead of matplotlib's table
+artist (which is great for plots but weak for pagination/wrapping).
 
-Prerequisites:
-- A private config (`private/private_config.yaml` or `PYSYS_PRIVATE_CONFIG_DIR`) with
-  `parquet_store` and optional Mongo credentials configured.
-- Data already seeded into Mongo/Parquet and enviroment variables already set 
-  (see docs/production.md for data loading).
-- Optional: pass --use-db-capital to pull capital/base_currency from the DB (via
-  dataCapital/dataCurrency) instead of the YAML notional_trading_capital/base_currency.
-  Requires capital to exist in parquet/Mongo for the chosen strategy.
-  Run `update_total_capital` then `update_strategy_capital` first so capital exists.
+Key improvements
+- Robust wrapping with Paragraphs (no text spilling out of cells)
+- Auto row height based on wrapped content
+- Repeat table headers across pages
+- Policy-driven tables (wrap / alignment / landscape / wide-table chunking)
+- Correlation matrices split into manageable column blocks
+
+You can drop this file in place of your current backtest runner (or merge the
+PDF-related parts into your existing script).
+
 """
+
+from __future__ import annotations
 
 import argparse
 import contextlib
@@ -24,11 +27,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from collections import defaultdict
-import math
 import io
 import logging
-import warnings
+import math
 import sys
+import warnings
 from typing import Any, Iterable, Optional, Sequence
 
 import numpy as np
@@ -48,14 +51,36 @@ from syscore.fileutils import (
     resolve_path_and_filename_for_package,
 )
 
+# --- ReportLab PDF rendering ---
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.units import cm
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import (
+    BaseDocTemplate,
+    PageTemplate,
+    Frame,
+    Paragraph,
+    Spacer,
+    Table,
+    TableStyle,
+    Image as RLImage,
+    PageBreak,
+    NextPageTemplate,
+)
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+
 DEFAULT_FALLBACK_SPREAD = 1.0  # price units if spread missing
 
 
+# =========================
+# Path helpers
+# =========================
+
 def _infer_default_config_path() -> Optional[Path]:
-    """
-    If called from a script named <name>_backtest.py, try to use
-    <name>_config.yaml in the same folder. Otherwise return None.
-    """
+    """If entrypoint is <name>_backtest.py, try <name>_config.yaml next to it."""
     try:
         main_path = Path(sys.argv[0]).resolve()
     except Exception:
@@ -66,15 +91,10 @@ def _infer_default_config_path() -> Optional[Path]:
 
     base = main_path.stem[: -len("_backtest")]
     candidate = main_path.with_name(f"{base}_config.yaml")
-    if candidate.exists():
-        return candidate
-    return None
+    return candidate if candidate.exists() else None
 
 
 def _resolve_file_path(pathlike: Optional[Path]) -> Optional[Path]:
-    """
-    Resolve a path that may be in dot/relative/absolute format to a Path.
-    """
     if pathlike is None:
         return None
     try:
@@ -85,9 +105,6 @@ def _resolve_file_path(pathlike: Optional[Path]) -> Optional[Path]:
 
 
 def _resolve_dir_path(pathlike: Optional[Path]) -> Optional[Path]:
-    """
-    Resolve a directory path using pysystemtrade's path helpers.
-    """
     if pathlike is None:
         return None
     try:
@@ -99,9 +116,7 @@ def _resolve_dir_path(pathlike: Optional[Path]) -> Optional[Path]:
 
 @contextlib.contextmanager
 def _tee_output(log_path: Optional[Path]):
-    """
-    Tee stdout/stderr to the given log_path while still echoing to the terminal.
-    """
+    """Tee stdout/stderr to log_path while still echoing to terminal."""
     if log_path is None:
         yield
         return
@@ -138,60 +153,30 @@ def _tee_output(log_path: Optional[Path]):
             yield
 
 
+# =========================
+# Config + result models
+# =========================
+
 @dataclass
 class BacktestConfig:
-    """
-    Configuration for reusing the backtest without rewriting the script when
-    inputs/outputs change.
-
-    Parameters
-    ----------
-    config_path : Path | None
-        YAML config for the backtest; inferred from <script>_config.yaml when omitted.
-    results_dir : Path | None
-        Output folder; defaults to <config_dir>/backtest_results.
-    timestamp : str | None
-        Tag appended to report filenames; defaults to current datetime.
-    fallback_spread : float
-        Used when DB spread cost is missing or zero.
-    instrument_filter : Sequence[str] | None
-        Restrict instruments; None keeps the configured universe.
-    include_plots / include_quantstats / include_pdf / include_report_txt / include_debug_log : bool
-        Toggle generation of PNGs, QuantStats HTML, unified PDF, text summary, and stdout/stderr log.
-        Files are written to results_dir as backtest_report_<ts>.txt / backtest_output_<ts>.log.
-    keep_intermediate_figs : bool
-        Keep PNGs on disk after PDF creation (otherwise they're deleted).
-    use_cache : bool
-        Load system cache if present, then save refreshed cache at the end.
-    cache_file : Path | None
-        Custom cache pickle path; default: results_dir/<config_stem>_system_cache.pckz.
-    cache_compress : bool
-        Sets system.config.backtest_compress before pickling (compressed .pckz files).
-    export_estimates : bool
-        Save estimated parameters to YAML when estimation flags are enabled.
-    use_db_capital : bool
-        When True, fetch capital/base_currency from dataCapital/dataCurrency (strategy_name based) instead of YAML.
-    strategy_name : str | None
-        Strategy key for DB capital lookup; defaults to the config filename stem.
-    capital_multiplier : str | None
-        Override capital compounding without editing YAML. Provide 'fixed' / 'full' / 'half'
-        or a dotted path to a function (e.g. syscore.capital.full_compounding).
-    """
-
     config_path: Optional[Path] = None
     results_dir: Optional[Path] = None
     timestamp: Optional[str] = None
     fallback_spread: float = DEFAULT_FALLBACK_SPREAD
     instrument_filter: Optional[Sequence[str]] = None
+
     include_plots: bool = True
     include_quantstats: bool = True
     include_pdf: bool = True
     include_report_txt: bool = True
     include_debug_log: bool = True
+
     keep_intermediate_figs: bool = False
+
     use_cache: bool = False
     cache_file: Optional[Path] = None
     cache_compress: bool = True
+
     export_estimates: bool = True
     use_db_capital: bool = False
     strategy_name: Optional[str] = None
@@ -208,33 +193,34 @@ class BacktestConfig:
                 "config_path is required (no <name>_config.yaml inferred). "
                 "Pass BacktestConfig.config_path or --config."
             )
+
         resolved_results = (
             _resolve_dir_path(self.results_dir)
             if self.results_dir is not None
             else _resolve_dir_path(resolved_config.parent / "backtest_results")
         )
         resolved_timestamp = self.timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-        resolved_instruments = (
-            tuple(self.instrument_filter) if self.instrument_filter else None
-        )
+        resolved_instruments = tuple(self.instrument_filter) if self.instrument_filter else None
+
         cache_ext = "pckz" if self.cache_compress else "pck"
         resolved_cache = (
             _resolve_file_path(self.cache_file)
             if self.cache_file is not None
             else resolved_results / f"{resolved_config.stem}_system_cache.{cache_ext}"
         )
+
         return BacktestConfig(
             config_path=resolved_config,
             results_dir=resolved_results,
             timestamp=resolved_timestamp,
             fallback_spread=float(self.fallback_spread),
             instrument_filter=resolved_instruments,
-            include_plots=self.include_plots,
-            include_quantstats=self.include_quantstats,
-            include_pdf=self.include_pdf,
-            include_report_txt=self.include_report_txt,
-            include_debug_log=self.include_debug_log,
-            keep_intermediate_figs=self.keep_intermediate_figs,
+            include_plots=bool(self.include_plots),
+            include_quantstats=bool(self.include_quantstats),
+            include_pdf=bool(self.include_pdf),
+            include_report_txt=bool(self.include_report_txt),
+            include_debug_log=bool(self.include_debug_log),
+            keep_intermediate_figs=bool(self.keep_intermediate_figs),
             use_cache=bool(self.use_cache),
             cache_file=resolved_cache,
             cache_compress=bool(self.cache_compress),
@@ -274,17 +260,16 @@ class BacktestResult:
     outputs: BacktestOutputs
 
 
+# =========================
+# Matplotlib plotting helpers
+# =========================
+
 def _set_matplotlib_font_defaults():
-    """
-    Set a safe default font to avoid 'Arial not found' warnings.
-    """
     try:
         import matplotlib
-
         matplotlib.rcParams["font.family"] = "DejaVu Sans"
         matplotlib.rcParams["font.sans-serif"] = ["DejaVu Sans", "sans-serif"]
         matplotlib.rcParams["font.serif"] = ["DejaVu Serif", "serif"]
-
         logging.getLogger("matplotlib").setLevel(logging.ERROR)
         logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
         warnings.filterwarnings(
@@ -297,9 +282,6 @@ def _set_matplotlib_font_defaults():
 
 
 def _clean_series(series: Any) -> pd.Series:
-    """
-    Drop NA and remove leading zeros (keep data from first non-zero onward).
-    """
     if series is None:
         return pd.Series(dtype=float)
 
@@ -318,563 +300,18 @@ def _clean_series(series: Any) -> pd.Series:
         return s
 
     mask = s.ne(0).cummax().astype(bool)
-    if mask.any():
-        return s.loc[mask]
-    # all zeros: keep the original (no trimming) to avoid empty plots
-    return s
-
-
-def _filter_instruments(
-    instruments: Iterable[str], desired: Optional[Sequence[str]]
-) -> list:
-    """
-    Limit the instrument list to the requested subset; if the filter is empty
-    return the full list.
-    """
-    full_list = list(instruments or [])
-    if not desired:
-        return full_list
-
-    desired_set = set(desired)
-    filtered = [inst for inst in full_list if inst in desired_set]
-    missing = sorted(desired_set - set(full_list))
-    if missing:
-        print(f"Instruments not found and ignored: {', '.join(missing)}")
-    return filtered
-
-
-def _alternate_cache_path(path: Path) -> Optional[Path]:
-    """
-    If the requested cache file is missing, try the opposite compression suffix.
-    """
-    suffix = path.suffix.lower()
-    if suffix == ".pckz":
-        alt = path.with_suffix(".pck")
-    elif suffix == ".pck":
-        alt = path.with_suffix(".pckz")
-    else:
-        return None
-    return alt if alt.exists() else None
-
-
-def _infer_cache_compress(path: Path, default: bool) -> bool:
-    """
-    Derive the compression flag from the cache filename when possible.
-    """
-    suffix = path.suffix.lower()
-    if suffix == ".pckz":
-        return True
-    if suffix == ".pck":
-        return False
-    return default
-
-
-def _estimated_attr_names_from_config(config_obj: Config) -> list:
-    """
-    Return the list of estimated attributes to export based on config flags.
-    """
-    names = []
-    if getattr(config_obj, "use_instrument_weight_estimates", False):
-        names.append("instrument_weights")
-    if getattr(config_obj, "use_instrument_div_mult_estimates", False):
-        names.append("instrument_div_multiplier")
-    if getattr(config_obj, "use_forecast_weight_estimates", False):
-        names.append("forecast_weights")
-    if getattr(config_obj, "use_forecast_div_mult_estimates", False):
-        names.append("forecast_div_multiplier")
-    if getattr(config_obj, "use_forecast_scale_estimates", False):
-        names.append("forecast_scalars")
-    return names
-
-
-def _resolve_capital_multiplier(arg: str) -> str:
-    """
-    Map friendly aliases to a capital multiplier path; otherwise return arg.
-    """
-    aliases = {
-        "fixed": f"{fixed_capital.__module__}.{fixed_capital.__name__}",
-        "full": f"{full_compounding.__module__}.{full_compounding.__name__}",
-        "half": f"{half_compounding.__module__}.{half_compounding.__name__}",
-    }
-    return aliases.get(arg.strip().lower(), arg)
-
-
-def run_backtest(
-    backtest_config: BacktestConfig,
-    data_factory=dbFuturesSimData,
-    system_factory=futures_system,
-) -> BacktestResult:
-    """
-    Build the system on DB data and print basic metrics.
-    Pass BacktestConfig to reuse the flow with other settings without rewriting
-    the script.
-
-    If backtest_config.use_db_capital is True, the runner will retrieve
-    notional_trading_capital/base_currency from dataCapital/dataCurrency using
-    backtest_config.strategy_name (default: config filename stem). Otherwise it
-    expects the YAML to provide notional_trading_capital/base_currency.
-    Ensure capital has been populated first (run update_total_capital then
-    update_strategy_capital).
-
-    Optional override: backtest_config.capital_multiplier can be set to one of
-    'fixed' / 'full' / 'half' (or a dotted function path, e.g. syscore.capital.full_compounding)
-    to set config.capital_multiplier.func without editing the YAML.
-    """
-    cfg = backtest_config.with_defaults()
-    logger = logging.getLogger(__name__)
-    results_dir = cfg.results_dir
-    timestamp = cfg.timestamp
-    log_path = (
-        results_dir / f"backtest_output_{timestamp}.log"
-        if cfg.include_debug_log
-        else None
-    )
-
-    with _tee_output(log_path):
-        results_dir.mkdir(parents=True, exist_ok=True)
-        _set_matplotlib_font_defaults()
-        data = data_factory()
-
-        config_obj = Config(str(cfg.config_path))
-        if cfg.use_db_capital:
-            strategy_name = cfg.strategy_name or cfg.config_path.stem
-            capital_data_source = (
-                data if hasattr(data, "add_class_object") else dataBlob()
-            )
-            try:
-                capital_data = dataCapital(capital_data_source)
-                notional_trading_capital = (
-                    capital_data.get_current_capital_for_strategy(strategy_name)
-                )
-            except missingData as err:
-                raise Exception(
-                    f"Capital data is missing for strategy '{strategy_name}': can't run backtest"
-                ) from err
-            base_currency = dataCurrency(capital_data_source).get_base_currency()
-            config_obj.notional_trading_capital = notional_trading_capital
-            config_obj.base_currency = base_currency
-            msg = (
-                f"Using DB capital for {strategy_name}: "
-                f"{base_currency} {notional_trading_capital:,.2f}"
-            )
-            print(msg)
-            logger.info(msg)
-        if cfg.capital_multiplier:
-            cm_func = _resolve_capital_multiplier(cfg.capital_multiplier)
-            config_obj.capital_multiplier = {"func": cm_func}
-            logger.info(f"Applied capital multiplier override: {cm_func}")
-
-        config_instruments = list(getattr(config_obj, "instruments", []) or [])
-        weights_dict = getattr(config_obj, "instrument_weights", {}) or {}
-        weights_instruments = list(weights_dict.keys())
-
-        all_instruments = list(data.get_instrument_list())
-        # Universe precedence: explicit config instruments > weight keys > all from DB
-        base_universe = (
-            config_instruments
-            if config_instruments
-            else weights_instruments or all_instruments
-        )
-
-        instrument_list = _filter_instruments(base_universe, cfg.instrument_filter)
-        if cfg.instrument_filter and not instrument_list:
-            print("Instrument filter empty: using base instrument universe.")
-            instrument_list = base_universe
-
-        spread_costs_used, spread_costs_missing = _ensure_spread_costs(
-            data, instrument_list, fallback_default=cfg.fallback_spread
-        )
-        system = system_factory(data=data, config=config_obj)
-
-        cache_loaded = False
-        cache_items_loaded = 0
-        cache_path = cfg.cache_file if cfg.use_cache else None
-        if cfg.use_cache and cache_path is not None:
-            effective_path = (
-                cache_path if cache_path.exists() else _alternate_cache_path(cache_path)
-            )
-            if effective_path is None:
-                msg = f"No cache found at {cache_path}; building results from scratch."
-                print(msg)
-                logger.info(msg)
-            else:
-                try:
-                    system.config.backtest_compress = _infer_cache_compress(
-                        effective_path, cfg.cache_compress
-                    )
-                except Exception:
-                    pass
-                try:
-                    system.cache.unpickle(str(effective_path))
-                    cache_loaded = True
-                    cache_path = effective_path
-                    try:
-                        cache_items_loaded = len(system.cache.get_items_with_data())
-                    except Exception:
-                        cache_items_loaded = 0
-                    msg = (
-                        f"Loaded cached system state from {effective_path} "
-                        f"({cache_items_loaded} cached items)."
-                    )
-                    print(msg)
-                    logger.info(msg)
-                except Exception as err:
-                    msg = f"Cache load failed from {effective_path} ({err}); continuing without cache."
-                    print(msg)
-                    logger.warning(msg)
-        if cfg.use_cache and cache_loaded and cache_items_loaded == 0:
-            msg = "Cache loaded but contained 0 items; computations will run from scratch."
-            print(msg)
-            logger.info(msg)
-
-        portfolio = system.accounts.portfolio()
-        instruments_for_output = instrument_list or system.get_instrument_list()
-
-        print(f"Instruments: {', '.join(instruments_for_output)}")
-        print("\nLatest portfolio stats:")
-        stats = portfolio.stats()
-        _print_stats(stats)
-
-        print(f"\nSharpe: {portfolio.sharpe():.2f}")
-
-        print("\nEquity curve (last 5):")
-        curve = portfolio.curve()
-        _safe_tail_print(curve, 5)
-
-        print("\nDrawdown (last 5):")
-        drawdown = portfolio.drawdown()
-        _safe_tail_print(drawdown, 5)
-
-        print("\nRolling annualised std (last 5):")
-        rolling_std = portfolio.rolling_ann_std()
-        _safe_tail_print(rolling_std, 5)
-
-        base_currency = getattr(config_obj, "base_currency", "")
-
-        print("\nPerformance per instrument (net % returns):")
-        per_inst_rows, per_inst_headers = _print_per_instrument_perf(
-            portfolio,
-            instrument_filter=instrument_list,
-        )
-
-        try:
-            rule_perf_tables = _collect_rule_performance_tables(
-                system,
-                portfolio,
-                base_currency=base_currency,
-                verbose=True,
-            )
-        except Exception as err:
-            print(f"Rule-level performance skipped ({err})")
-            rule_perf_tables = {
-                "group_rows": [],
-                "group_headers": [],
-                "variation_rows": [],
-                "variation_headers": [],
-                "correlation_rows": [],
-                "correlation_headers": [],
-                "group_curves": {},
-            }
-        per_rule_rows = rule_perf_tables["group_rows"]
-        per_rule_headers = rule_perf_tables["group_headers"]
-        rule_variation_rows = rule_perf_tables["variation_rows"]
-        rule_variation_headers = rule_perf_tables["variation_headers"]
-        rule_correlation_rows = rule_perf_tables["correlation_rows"]
-        rule_correlation_headers = rule_perf_tables["correlation_headers"]
-        rule_group_curves = rule_perf_tables["group_curves"]
-
-        print("\nRecent notional positions per instrument (last 3):")
-        for inst in instruments_for_output:
-            print(f"- {inst}:")
-            _safe_tail_print(
-                system.portfolio.get_notional_position(inst), 3, indent="  "
-            )
-
-        figures = {}
-        if cfg.include_plots:
-            figures["equity"] = results_dir / f"equity_curve_{timestamp}.png"
-            figures["drawdown"] = results_dir / f"drawdown_{timestamp}.png"
-            figures["rolling_std"] = results_dir / f"rolling_ann_std_{timestamp}.png"
-            figures["notional_uncapped"] = (
-                results_dir / f"notional_positions_uncapped_{timestamp}.png"
-            )
-            figures["notional_capped"] = (
-                results_dir / f"notional_positions_capped_{timestamp}.png"
-            )
-            figures["buffered_positions"] = (
-                results_dir / f"buffered_positions_{timestamp}.png"
-            )
-            if rule_group_curves:
-                figures["rule_groups"] = (
-                    results_dir / f"rule_groups_{timestamp}.png"
-                )
-
-            _plot_series(curve, figures["equity"], title="Equity curve")
-            _plot_series(drawdown, figures["drawdown"], title="Drawdown")
-            _plot_series(
-                rolling_std, figures["rolling_std"], title="Rolling annualised std"
-            )
-            _plot_notional_positions(
-                system,
-                figures["notional_uncapped"],
-                instruments_for_output,
-                clip_bounds=None,
-            )
-            _plot_notional_positions(
-                system,
-                figures["notional_capped"],
-                instruments_for_output,
-                clip_bounds=(-20, 20),
-            )
-            _plot_buffered_positions(
-                system,
-                figures["buffered_positions"],
-                instruments_for_output,
-                clip_bounds=None,
-            )
-            if rule_group_curves:
-                _plot_multiple_series(
-                    rule_group_curves,
-                    figures["rule_groups"],
-                    title="P&L aggregato per funzione di trading rule",
-                    ylabel=f"P&L {base_currency}".strip(),
-                )
-
-        qs_html = (
-            results_dir / f"backtest_report_qs_{timestamp}.html"
-            if cfg.include_quantstats
-            else None
-        )
-        if cfg.include_quantstats:
-            _quantstats_report(portfolio.percent, qs_html)
-
-        per_inst_rows = (
-            sorted(per_inst_rows, key=lambda r: r[0]) if per_inst_rows else []
-        )
-        per_rule_rows = (
-            sorted(per_rule_rows, key=lambda r: r[0]) if per_rule_rows else []
-        )
-        rule_variation_rows = (
-            sorted(rule_variation_rows, key=lambda r: r[0])
-            if rule_variation_rows
-            else []
-        )
-        per_inst_headers = per_inst_headers or [
-            "Name",
-            "Total",
-            "CAGR",
-            "Vol",
-            "Sharpe",
-            "MaxDD",
-        ]
-        per_rule_headers = per_rule_headers or [
-            "Name",
-            "Total",
-            "CAGR",
-            "Vol",
-            "Sharpe",
-            "MaxDD",
-        ]
-        rule_variation_headers = rule_variation_headers or per_rule_headers
-        rule_correlation_rows = rule_correlation_rows or []
-        rule_correlation_headers = rule_correlation_headers or []
-        cost_rows = _build_spread_cost_rows(
-            spread_costs_used, spread_costs_missing, instruments_for_output
-        )
-
-        notional_rows = _collect_notional_positions_by_year(
-            system, instruments_for_output
-        )
-        trades_rows = _collect_trades(
-            system,
-            instrument_filter=instruments_for_output,
-            max_rows=200,
-            base_currency=base_currency,
-        )
-
-        summary_rows = _build_summary_rows(
-            stats,
-            portfolio,
-            base_currency=base_currency,
-        )
-
-        pdf_path = (
-            results_dir / f"backtest_report_{timestamp}.pdf"
-            if cfg.include_pdf
-            else None
-        )
-        report_txt_path = (
-            results_dir / f"backtest_report_{timestamp}.txt"
-            if cfg.include_report_txt
-            else None
-        )
-
-        if cfg.include_pdf:
-            _build_unified_pdf(
-                output_path=pdf_path,
-                summary_rows=summary_rows,
-                per_inst_rows=per_inst_rows,
-                per_rule_rows=per_rule_rows,
-                cost_rows=cost_rows,
-                notional_rows=notional_rows,
-                trades_rows=trades_rows,
-                figure_paths=list(figures.values()),
-                per_inst_headers=per_inst_headers,
-                per_rule_headers=per_rule_headers,
-                rule_variation_rows=rule_variation_rows,
-                rule_variation_headers=rule_variation_headers,
-                rule_correlation_rows=rule_correlation_rows,
-                rule_correlation_headers=rule_correlation_headers,
-            )
-
-        if cfg.include_report_txt:
-            _write_report_txt(
-                output_path=report_txt_path,
-                summary_rows=summary_rows,
-                per_inst_rows=per_inst_rows,
-                per_rule_rows=per_rule_rows,
-                cost_rows=cost_rows,
-                notional_rows=notional_rows,
-                trades_rows=trades_rows,
-                per_inst_headers=per_inst_headers,
-                per_rule_headers=per_rule_headers,
-                rule_variation_rows=rule_variation_rows,
-                rule_variation_headers=rule_variation_headers,
-                rule_correlation_rows=rule_correlation_rows,
-                rule_correlation_headers=rule_correlation_headers,
-            )
-
-        if cfg.include_plots and not cfg.keep_intermediate_figs:
-            for tmp_fig in figures.values():
-                try:
-                    tmp_fig.unlink(missing_ok=True)
-                except Exception:
-                    pass
-
-        figures_for_output = (
-            {name: path for name, path in figures.items() if path.exists()}
-            if cfg.include_plots
-            else {}
-        )
-
-        estimates_yaml = None
-        estimated_names = _estimated_attr_names_from_config(config_obj)
-        if cfg.export_estimates and estimated_names:
-            estimates_yaml = (
-                results_dir
-                / f"{cfg.config_path.stem}_estimated_params_{timestamp}.yaml"
-            )
-            try:
-                systemDiag(system).yaml_config_with_estimated_parameters(
-                    str(estimates_yaml),
-                    attr_names=estimated_names,
-                )
-                print(
-                    f"Saved estimated parameters ({', '.join(estimated_names)}) to {estimates_yaml}"
-                )
-            except Exception as err:
-                print(f"Estimated parameters export skipped ({err})")
-                estimates_yaml = None
-
-        outputs = BacktestOutputs(
-            results_dir=results_dir,
-            figures=figures_for_output,
-            quantstats_report=qs_html,
-            pdf_report=pdf_path,
-            report_txt=report_txt_path,
-            debug_log=log_path,
-            estimates_yaml=estimates_yaml,
-        )
-
-        if cfg.use_cache and cache_path is not None:
-            try:
-                try:
-                    system.config.backtest_compress = _infer_cache_compress(
-                        cache_path, cfg.cache_compress
-                    )
-                except Exception:
-                    pass
-                cache_path.parent.mkdir(parents=True, exist_ok=True)
-                system.cache.pickle(str(cache_path))
-                verb = "Updated" if cache_loaded else "Saved"
-                print(f"{verb} system cache at {cache_path}")
-            except Exception as err:
-                print(f"Cache save skipped ({err})")
-
-        if log_path is not None:
-            print(f"Saved terminal output log: {log_path}")
-
-        return BacktestResult(
-            system=system,
-            summary_rows=summary_rows,
-            per_inst_rows=per_inst_rows,
-            per_rule_rows=per_rule_rows,
-            per_rule_headers=per_rule_headers,
-            rule_variation_rows=rule_variation_rows,
-            rule_variation_headers=rule_variation_headers,
-            rule_correlation_rows=rule_correlation_rows,
-            rule_correlation_headers=rule_correlation_headers,
-            per_inst_headers=per_inst_headers,
-            cost_rows=cost_rows,
-            notional_rows=notional_rows,
-            trades_rows=trades_rows,
-            outputs=outputs,
-        )
-
-
-def _print_stats(stats: Any, indent: str = ""):
-    """
-    Print stats in a readable way whether they are a pandas object or a list of tuples.
-    """
-    if hasattr(stats, "to_dict"):
-        stats_dict = stats.to_dict()
-    elif isinstance(stats, dict):
-        stats_dict = stats
-    elif isinstance(stats, Iterable):
-        try:
-            # Handle list of tuples like [(key, val), ...]
-            stats_dict = dict(stats)
-        except Exception:
-            stats_dict = None
-    else:
-        stats_dict = None
-
-    if stats_dict is not None:
-        for k, v in stats_dict.items():
-            print(f"{indent}{k}: {v}")
-    else:
-        # Fallback: print raw object
-        print(f"{indent}{stats}")
-
-
-def _safe_tail_print(obj: Any, n: int = 5, indent: str = ""):
-    """
-    Print tail of a pandas object if available; otherwise print the object.
-    """
-    if hasattr(obj, "tail"):
-        try:
-            print(obj.tail(n))
-            return
-        except Exception:
-            pass
-    print(f"{indent}{obj}")
+    return s.loc[mask] if mask.any() else s
 
 
 def _plot_series(series: Any, path: Optional[Path], title: str = ""):
-    """
-    Save a simple line plot for a pandas-like series if matplotlib is available.
-    """
     if path is None:
         return
     try:
         import matplotlib.pyplot as plt
-
         _set_matplotlib_font_defaults()
-
         s = _clean_series(series)
         if s.empty:
             return
-
         plt.figure(figsize=(10, 4))
         s.plot()
         plt.title(title or path.name)
@@ -886,21 +323,12 @@ def _plot_series(series: Any, path: Optional[Path], title: str = ""):
         print(f"Plot skipped ({err})")
 
 
-def _plot_multiple_series(
-    series_dict: dict, path: Optional[Path], title: str = "", ylabel: str = ""
-):
-    """
-    Plot multiple series on the same axes (used for aggregated rule variations).
-    """
-    if path is None:
-        return
-    if not series_dict:
+def _plot_multiple_series(series_dict: dict, path: Optional[Path], title: str = "", ylabel: str = ""):
+    if path is None or not series_dict:
         return
     try:
         import matplotlib.pyplot as plt
-
         _set_matplotlib_font_defaults()
-
         plt.figure(figsize=(12, 6))
         plotted = 0
         for name, series in series_dict.items():
@@ -909,11 +337,9 @@ def _plot_multiple_series(
                 continue
             plt.plot(s.index, s.values, label=name)
             plotted += 1
-
         if plotted == 0:
             plt.close()
             return
-
         plt.title(title or path.name)
         plt.xlabel("Date")
         if ylabel:
@@ -927,36 +353,86 @@ def _plot_multiple_series(
         print(f"Aggregated rule plot skipped ({err})")
 
 
-def _quantstats_report(returns: Any, output_path: Optional[Path]):
-    """
-    Generate a QuantStats HTML report if quantstats is available.
+def _plot_notional_positions(system, path: Optional[Path], instruments: Optional[Sequence[str]], clip_bounds=None):
+    if path is None:
+        return
+    try:
+        import matplotlib.pyplot as plt
+        _set_matplotlib_font_defaults()
+        instrs = instruments or system.get_instrument_list()
+        plt.figure(figsize=(12, 6))
+        for inst in instrs:
+            pos = system.portfolio.get_notional_position(inst)
+            pos = _clean_series(pd.Series(pos).astype(float)).sort_index()
+            if clip_bounds:
+                pos = pos.clip(lower=clip_bounds[0], upper=clip_bounds[1])
+            plt.plot(pos.index, pos.values, label=inst)
+        if clip_bounds:
+            plt.axhline(clip_bounds[0], linestyle="--", linewidth=0.8, alpha=0.5)
+            plt.axhline(clip_bounds[1], linestyle="--", linewidth=0.8, alpha=0.5)
+            plt.title(f"Notional positions (capped to [{clip_bounds[0]}, {clip_bounds[1]}])")
+        else:
+            plt.title("Notional positions (uncapped)")
+        plt.ylabel("Notional position")
+        plt.xlabel("Date")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(path)
+        plt.close()
+        print(f"Saved notional positions plot: {path}")
+    except Exception as err:
+        print(f"Notional position plot skipped ({err})")
 
-    Expects periodic percentage returns (e.g. portfolio.percent), not a cumulative curve.
-    """
+
+def _plot_buffered_positions(system, path: Optional[Path], instruments: Optional[Sequence[str]], clip_bounds=None):
+    if path is None:
+        return
+    try:
+        import matplotlib.pyplot as plt
+        _set_matplotlib_font_defaults()
+        instrs = instruments or system.get_instrument_list()
+        plt.figure(figsize=(12, 6))
+        for inst in instrs:
+            pos = system.accounts.get_buffered_position(inst, roundpositions=True)
+            pos = _clean_series(pd.Series(pos).astype(float)).sort_index()
+            if clip_bounds:
+                pos = pos.clip(lower=clip_bounds[0], upper=clip_bounds[1])
+            plt.step(pos.index, pos.values, where="post", label=inst)
+        if clip_bounds:
+            plt.axhline(clip_bounds[0], linestyle="--", linewidth=0.8, alpha=0.5)
+            plt.axhline(clip_bounds[1], linestyle="--", linewidth=0.8, alpha=0.5)
+            plt.title(f"Buffered positions (capped to [{clip_bounds[0]}, {clip_bounds[1]}])")
+        else:
+            plt.title("Buffered positions (executed, rounded contracts)")
+        plt.ylabel("Contracts")
+        plt.xlabel("Date")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(path)
+        plt.close()
+        print(f"Saved buffered positions plot: {path}")
+    except Exception as err:
+        print(f"Buffered position plot skipped ({err})")
+
+
+# =========================
+# Quantstats
+# =========================
+
+def _quantstats_report(returns: Any, output_path: Optional[Path]):
     if output_path is None:
         return
     try:
         _set_matplotlib_font_defaults()
         import quantstats as qs
-
         qs.extend_pandas()
-
-        if not hasattr(returns, "__len__"):
-            print("QuantStats skipped (returns is not iterable).")
-            return
 
         returns = _clean_series(pd.Series(returns))
         if returns.empty:
             print("QuantStats skipped (no returns).")
             return
-
-        # portfolio.percent is expressed in percent units; convert to decimal for QuantStats
         returns = returns.astype(float) / 100.0
 
-        # Normalise index safely for quantstats:
-        # 1) tz-naive datetime
-        # 2) resample to daily with ffill
-        # 3) rebuild index as a clean daily DateRange (freq='D') to avoid 'ME' bugs
         if isinstance(returns.index, pd.PeriodIndex):
             returns.index = returns.index.to_timestamp()
         else:
@@ -982,139 +458,13 @@ def _quantstats_report(returns: Any, output_path: Optional[Path]):
         print(f"QuantStats skipped ({err})")
 
 
-def _ensure_spread_costs(data, instruments, fallback_default: float):
-    """
-    Ensure spread costs exist; if zero/missing use fallback and patch get_spread_cost to return it.
-    Returns (used_costs_dict, missing_list).
-    """
-    scd = data.db_spread_cost_data
-    original_get = scd.get_spread_cost
-    missing = set()
-    used = {}
-
-    for inst in instruments:
-        try:
-            cost = original_get(inst)
-        except Exception:
-            cost = None
-        if cost is None or cost == 0.0:
-            missing.add(inst)
-            cost = fallback_default
-        used[inst] = cost
-
-    # Patch getter so the rest of the system uses the chosen values
-    def patched_get_spread_cost(instrument_code: str) -> float:
-        return used.get(instrument_code, fallback_default)
-
-    scd.get_spread_cost = patched_get_spread_cost  # type: ignore[attr-defined]
-
-    if missing:
-        print(
-            f"Spread costs missing or zero for: {', '.join(sorted(missing))}. "
-            f"Using fallback={fallback_default}."
-        )
-
-    return used, sorted(missing)
-
-
-def _plot_notional_positions(
-    system, path: Optional[Path], instruments: Optional[Sequence[str]], clip_bounds=None
-):
-    """
-    Plot notional positions for each instrument on a single chart (or the provided subset).
-    If clip_bounds is provided, positions are clipped to that range.
-    """
-    if path is None:
-        return
-    try:
-        import matplotlib.pyplot as plt
-
-        _set_matplotlib_font_defaults()
-
-        instrs = instruments or system.get_instrument_list()
-        plt.figure(figsize=(12, 6))
-        for inst in instrs:
-            pos = system.portfolio.get_notional_position(inst)
-            pos = _clean_series(pd.Series(pos).astype(float)).sort_index()
-            if clip_bounds:
-                pos = pos.clip(lower=clip_bounds[0], upper=clip_bounds[1])
-            plt.plot(pos.index, pos.values, label=inst)
-
-        if clip_bounds:
-            plt.axhline(
-                clip_bounds[0], color="red", linestyle="--", linewidth=0.8, alpha=0.5
-            )
-            plt.axhline(
-                clip_bounds[1], color="red", linestyle="--", linewidth=0.8, alpha=0.5
-            )
-            plt.title(
-                f"Notional positions (capped to [{clip_bounds[0]}, {clip_bounds[1]}])"
-            )
-        else:
-            plt.title("Notional positions (uncapped)")
-        plt.ylabel("Notional position")
-        plt.xlabel("Date")
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(path)
-        plt.close()
-        print(f"Saved notional positions plot: {path}")
-    except Exception as err:
-        print(f"Notional position plot skipped ({err})")
-
-
-def _plot_buffered_positions(
-    system, path: Optional[Path], instruments: Optional[Sequence[str]], clip_bounds=None
-):
-    """
-    Plot buffered (executed) positions for each instrument on a single chart (or subset).
-    """
-    if path is None:
-        return
-    try:
-        import matplotlib.pyplot as plt
-
-        _set_matplotlib_font_defaults()
-
-        instrs = instruments or system.get_instrument_list()
-        plt.figure(figsize=(12, 6))
-        for inst in instrs:
-            pos = system.accounts.get_buffered_position(inst, roundpositions=True)
-            pos = _clean_series(pd.Series(pos).astype(float)).sort_index()
-            if clip_bounds:
-                pos = pos.clip(lower=clip_bounds[0], upper=clip_bounds[1])
-            plt.step(
-                pos.index, pos.values, where="post", label=inst
-            )  # step to show fills
-
-        if clip_bounds:
-            plt.axhline(
-                clip_bounds[0], color="red", linestyle="--", linewidth=0.8, alpha=0.5
-            )
-            plt.axhline(
-                clip_bounds[1], color="red", linestyle="--", linewidth=0.8, alpha=0.5
-            )
-            plt.title(
-                f"Buffered positions (capped to [{clip_bounds[0]}, {clip_bounds[1]}])"
-            )
-        else:
-            plt.title("Buffered positions (executed, rounded contracts)")
-        plt.ylabel("Contracts")
-        plt.xlabel("Date")
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(path)
-        plt.close()
-        print(f"Saved buffered positions plot: {path}")
-    except Exception as err:
-        print(f"Buffered position plot skipped ({err})")
-
+# =========================
+# Core calculations + formatting
+# =========================
 
 def _compute_return_stats(returns_pct: pd.Series, periods_per_year: int = 252) -> dict:
-    """Return basic perf stats from a series of percent returns."""
     if returns_pct is None:
         return {}
-
     returns = pd.Series(returns_pct).astype(float) / 100.0
     returns = returns.replace([np.inf, -np.inf], np.nan).dropna()
     if returns.empty:
@@ -1127,6 +477,7 @@ def _compute_return_stats(returns_pct: pd.Series, periods_per_year: int = 252) -
     ann_return = np.expm1(log_returns.mean() * periods_per_year)
     vol = returns.std(ddof=0) * np.sqrt(periods_per_year)
     sharpe = ann_return / vol if vol > 0 else np.nan
+
     t_stat = np.nan
     p_value = np.nan
     if n > 1:
@@ -1136,10 +487,8 @@ def _compute_return_stats(returns_pct: pd.Series, periods_per_year: int = 252) -
             t_stat = mean_return / (sample_std / math.sqrt(n))
             try:
                 from scipy import stats
-
                 p_value = float(stats.t.sf(abs(t_stat), df=n - 1) * 2.0)
             except Exception:
-                # Fallback to normal approximation
                 p_value = float(math.erfc(abs(t_stat) / math.sqrt(2)))
 
     peak = cumulative.cummax()
@@ -1157,166 +506,10 @@ def _compute_return_stats(returns_pct: pd.Series, periods_per_year: int = 252) -
     )
 
 
-def _group_rules_by_function(system) -> dict:
-    """
-    Build a mapping {rule_function: [rule_variations]} using the underlying
-    trading rule function to aggregate variations of the same idea.
-    """
-    groups: dict[str, list] = defaultdict(list)
-    try:
-        trading_rules = system.rules.trading_rules()
-    except Exception:
-        trading_rules = {}
-
-    for rule_name, rule_obj in trading_rules.items():
-        func = getattr(rule_obj, "function", None)
-        func_name = getattr(func, "__name__", "") or str(func)
-        module_name = getattr(func, "__module__", "")
-        base_module = module_name.split(".")[-1] if module_name else ""
-        group_key = func_name
-        if base_module:
-            group_key = f"{base_module}.{func_name}"
-        group_key = group_key or rule_name
-        groups[group_key].append(rule_name)
-
-    # Fallback: if nothing resolved, treat each rule as its own group
-    if not groups and hasattr(system.accounts, "list_of_trading_rules"):
-        try:
-            for rule_name in system.accounts.list_of_trading_rules():
-                groups[rule_name].append(rule_name)
-        except Exception:
-            pass
-
-    return {k: sorted(v) for k, v in sorted(groups.items())}
-
-
-def _collect_notional_positions_by_year(
-    system, instrument_filter: Optional[Sequence[str]] = None
-) -> list:
-    """
-    Return annual average notional positions per instrument (optionally filtered)
-    for summary tables.
-    """
-    rows = []
-    try:
-        instruments = instrument_filter or system.get_instrument_list()
-    except Exception:
-        return rows
-
-    for inst in instruments:
-        try:
-            pos = system.portfolio.get_notional_position(inst)
-            pos = _clean_series(pd.Series(pos))
-            if pos.empty:
-                continue
-            df = pos.to_frame("pos")
-            df.index = pd.to_datetime(df.index)
-            grouped = df.resample("YE").mean().dropna()
-            for ts, row in grouped.iterrows():
-                rows.append(
-                    [
-                        inst,
-                        str(ts.year),
-                        f"{row['pos']:.2f}",
-                    ]
-                )
-        except Exception:
-            continue
-    return rows
-
-
-def _collect_trades(
-    system,
-    instrument_filter: Optional[Sequence[str]] = None,
-    max_rows: int = 200,
-    base_currency: str = "",
-) -> list:
-    """
-    Collect trade events (position changes) from buffered positions.
-    Optionally filter by instrument. Rows: [Date, Instrument, Trade (contracts),
-    New position, Position (base ccy), Spread cost, Commission cost, Total cost]
-    where costs/position are in base ccy.
-    Limited to the most recent max_rows to keep the report readable.
-    """
-    rows = []
-    try:
-        instruments = instrument_filter or system.get_instrument_list()
-    except Exception:
-        return rows
-
-    for inst in instruments:
-        try:
-            pos = system.accounts.get_buffered_position(inst, roundpositions=True)
-            pos = _clean_series(pd.Series(pos))
-            if pos.empty:
-                continue
-            diff = pos.diff().fillna(0)
-            trades = diff[diff != 0]
-
-            # Data needed for cost/valuation
-            price = system.portfolio.get_contract_prices(inst)
-            fx = system.accounts.get_fx_rate(inst)
-            block_mult = system.accounts.get_value_of_block_price_move(inst)
-            costs = system.accounts.get_raw_cost_data(inst)
-
-            for ts, delta in trades.items():
-                ts_dt = pd.to_datetime(ts)
-                clean_px = _clean_series(price)
-                clean_fx = _clean_series(fx)
-                try:
-                    px = clean_px.reindex([ts_dt], method="ffill").iloc[0]
-                    fx_rate = clean_fx.reindex([ts_dt], method="ffill").iloc[0]
-                except Exception:
-                    continue
-                if pd.isna(px) or pd.isna(fx_rate):
-                    continue
-
-                trade_blocks = float(delta)
-                position_blocks = float(pos.loc[ts])
-                value_per_block = px * block_mult
-
-                # Costs in instrument currency
-                spread_ccy = abs(trade_blocks) * costs.price_slippage * block_mult
-                per_block_comm = abs(trade_blocks) * costs.value_of_block_commission
-                per_trade_comm = costs.value_of_pertrade_commission
-                pct_comm = costs.percentage_cost * value_per_block * abs(trade_blocks)
-                commission_ccy = max(per_block_comm, per_trade_comm, pct_comm)
-                total_ccy = spread_ccy + commission_ccy
-
-                # Convert to base
-                spread_base = spread_ccy * fx_rate
-                commission_base = commission_ccy * fx_rate
-                total_base = total_ccy * fx_rate
-                position_base = position_blocks * value_per_block * fx_rate
-
-                rows.append(
-                    [
-                        str(ts_dt.date()),
-                        inst,
-                        f"{int(trade_blocks):+d}",
-                        f"{int(position_blocks)}",
-                        f"{position_base:,.2f} {base_currency}".strip(),
-                        f"{spread_base:,.4f} {base_currency}".strip(),
-                        f"{commission_base:,.4f} {base_currency}".strip(),
-                        f"{total_base:,.4f} {base_currency}".strip(),
-                    ]
-                )
-        except Exception:
-            continue
-
-    # Sort by date ascending then instrument
-    rows.sort(key=lambda r: (r[0], r[1]))
-
-    if len(rows) > max_rows:
-        rows = rows[-max_rows:]
-
-    return rows
-
-
 def _format_pct(x: float) -> str:
-    if x is None or np.isnan(x):
+    if x is None or (isinstance(x, float) and np.isnan(x)):
         return "-"
-    return f"{100 * x:,.2f}%"
+    return f"{100 * float(x):,.2f}%"
 
 
 def _format_ccy(x: float, base_currency: str = "") -> str:
@@ -1360,20 +553,21 @@ def _print_perf_table(
         if verbose:
             print(f"{title}: (no data)")
         return [], []
+
     col_names = ["Name"]
     if include_pnl:
         col_names.append("P&L")
     col_names += ["Total", "CAGR", "Vol", "Sharpe", "MaxDD"]
     if include_significance:
         col_names += ["t-stat", "p-value"]
+
     if verbose:
         print(title)
         print(" | ".join(col_names))
+
     printable = []
     for name, stats in rows:
-        row = [
-            name,
-        ]
+        row = [name]
         if include_pnl:
             row.append(_format_ccy(stats.get("pnl", np.nan), base_currency))
         row.extend(
@@ -1381,9 +575,7 @@ def _print_perf_table(
                 _format_pct(stats.get("total_return", np.nan)),
                 _format_pct(stats.get("ann_return", np.nan)),
                 _format_pct(stats.get("vol", np.nan)),
-                f"{stats.get('sharpe', np.nan):.2f}"
-                if not np.isnan(stats.get("sharpe", np.nan))
-                else "-",
+                f"{stats.get('sharpe', np.nan):.2f}" if not np.isnan(stats.get("sharpe", np.nan)) else "-",
                 _format_pct(stats.get("max_dd", np.nan)),
             ]
         )
@@ -1393,15 +585,12 @@ def _print_perf_table(
         printable.append(row)
         if verbose:
             print(" | ".join(row))
-
     return printable, col_names
 
 
-def _print_per_instrument_perf(
-    portfolio, instrument_filter: Optional[Sequence[str]] = None, verbose: bool = True
-):
+def _print_per_instrument_perf(portfolio, instrument_filter: Optional[Sequence[str]] = None, verbose: bool = True):
     try:
-        instrument_group = portfolio.percent  # per-instrument % P&L
+        instrument_group = portfolio.percent
         rows = []
         for inst in instrument_group.asset_columns:
             if instrument_filter and inst not in instrument_filter:
@@ -1416,16 +605,15 @@ def _print_per_instrument_perf(
         return [], []
 
 
-def _print_per_strategy_perf(
-    system, portfolio, base_currency: str = "", verbose: bool = True
-):
+def _print_per_strategy_perf(system, portfolio, base_currency: str = "", verbose: bool = True):
     try:
-        rules_group = system.accounts.pandl_for_all_trading_rules()
-        rules_group = rules_group.value_terms  # P&L in currency per rule
+        rules_group = system.accounts.pandl_for_all_trading_rules().value_terms
         capital = pd.Series(portfolio.capital).astype(float)
+
         rows = []
         returns_df = {}
         pnl_by_rule = {}
+
         for rule in rules_group.asset_columns:
             rule_curve = rules_group[rule]
             pnl = pd.Series(rule_curve.as_ts).astype(float)
@@ -1436,6 +624,7 @@ def _print_per_strategy_perf(
             stats["pnl"] = pnl.sum()
             returns_df[rule] = returns_pct
             rows.append((rule, stats))
+
         table_rows, headers = _print_perf_table(
             "Performance per rule variation (net % returns, scaled to portfolio capital):",
             rows,
@@ -1452,13 +641,32 @@ def _print_per_strategy_perf(
         return [], [], pd.DataFrame(), {}, pd.Series(dtype=float)
 
 
-def _build_rule_group_perf(
-    system,
-    pnl_by_rule: dict,
-    capital_series: pd.Series,
-    base_currency: str = "",
-    verbose: bool = True,
-):
+def _group_rules_by_function(system) -> dict[str, list]:
+    groups: dict[str, list] = defaultdict(list)
+    try:
+        trading_rules = system.rules.trading_rules()
+    except Exception:
+        trading_rules = {}
+    for rule_name, rule_obj in trading_rules.items():
+        func = getattr(rule_obj, "function", None)
+        func_name = getattr(func, "__name__", "") or str(func)
+        module_name = getattr(func, "__module__", "")
+        base_module = module_name.split(".")[-1] if module_name else ""
+        group_key = f"{base_module}.{func_name}" if base_module else func_name
+        group_key = group_key or rule_name
+        groups[group_key].append(rule_name)
+
+    if not groups and hasattr(system.accounts, "list_of_trading_rules"):
+        try:
+            for rule_name in system.accounts.list_of_trading_rules():
+                groups[rule_name].append(rule_name)
+        except Exception:
+            pass
+
+    return {k: sorted(v) for k, v in sorted(groups.items())}
+
+
+def _build_rule_group_perf(system, pnl_by_rule: dict, capital_series: pd.Series, base_currency: str = "", verbose: bool = True):
     groups = _group_rules_by_function(system)
     if not groups:
         groups = {rule_name: [rule_name] for rule_name in pnl_by_rule.keys()}
@@ -1474,6 +682,7 @@ def _build_rule_group_perf(
             group_pnl = pnl if group_pnl is None else group_pnl.add(pnl, fill_value=0.0)
         if group_pnl is None or group_pnl.empty:
             continue
+
         group_pnl = group_pnl.sort_index()
         group_curves[group_name] = group_pnl.cumsum().ffill()
 
@@ -1491,7 +700,6 @@ def _build_rule_group_perf(
         include_pnl=True,
         base_currency=base_currency,
     )
-
     return table_rows, headers, group_curves
 
 
@@ -1501,54 +709,23 @@ def _build_correlation_table(returns_df: pd.DataFrame):
     clean = returns_df.dropna(how="all")
     if clean.empty or clean.shape[1] < 2:
         return [], []
-
     corr = clean.corr()
     headers = ["Strategy"] + list(corr.columns)
     rows = []
     for idx, row in corr.iterrows():
-        formatted = [
-            "-" if pd.isna(val) else _format_number(val, decimals=3)
-            for val in row.values
-        ]
+        formatted = ["-" if pd.isna(val) else _format_number(val, decimals=3) for val in row.values]
         rows.append([idx] + formatted)
     return rows, headers
 
 
-def _print_correlation_table(title: str, headers: list, rows: list, verbose: bool):
-    if not verbose:
-        return
-    if not rows:
-        print(f"{title}: (no data)")
-        return
-    print(title)
-    print(" | ".join(headers))
-    for row in rows:
-        print(" | ".join(row))
-
-
-def _collect_rule_performance_tables(
-    system, portfolio, base_currency: str = "", verbose: bool = True
-):
-    var_rows, var_headers, returns_df, pnl_by_rule, capital_series = (
-        _print_per_strategy_perf(
-            system, portfolio, base_currency=base_currency, verbose=verbose
-        )
+def _collect_rule_performance_tables(system, portfolio, base_currency: str = "", verbose: bool = True):
+    var_rows, var_headers, returns_df, pnl_by_rule, capital_series = _print_per_strategy_perf(
+        system, portfolio, base_currency=base_currency, verbose=verbose
     )
     group_rows, group_headers, group_curves = _build_rule_group_perf(
-        system,
-        pnl_by_rule,
-        capital_series,
-        base_currency=base_currency,
-        verbose=verbose,
+        system, pnl_by_rule, capital_series, base_currency=base_currency, verbose=verbose
     )
     corr_rows, corr_headers = _build_correlation_table(returns_df)
-    _print_correlation_table(
-        "\nCorrelazione tra strategie/rule (returns percentuali)",
-        corr_headers,
-        corr_rows,
-        verbose=verbose,
-    )
-
     return dict(
         group_rows=group_rows,
         group_headers=group_headers,
@@ -1560,19 +737,104 @@ def _collect_rule_performance_tables(
     )
 
 
-def _build_spread_cost_rows(
-    used_costs: dict, missing: list, instruments: Optional[Sequence[str]] = None
-) -> list:
-    """
-    Build spread cost rows limited to the selected instruments (config/CLI),
-    defaulting to all entries in used_costs if no subset is provided.
-    """
+def _collect_notional_positions_by_year(system, instrument_filter: Optional[Sequence[str]] = None) -> list:
+    rows = []
+    try:
+        instruments = instrument_filter or system.get_instrument_list()
+    except Exception:
+        return rows
+
+    for inst in instruments:
+        try:
+            pos = system.portfolio.get_notional_position(inst)
+            pos = _clean_series(pd.Series(pos))
+            if pos.empty:
+                continue
+            df = pos.to_frame("pos")
+            df.index = pd.to_datetime(df.index)
+            grouped = df.resample("YE").mean().dropna()
+            for ts, row in grouped.iterrows():
+                rows.append([inst, str(ts.year), f"{row['pos']:.2f}"])
+        except Exception:
+            continue
+    return rows
+
+
+def _collect_trades(system, instrument_filter: Optional[Sequence[str]] = None, max_rows: int = 200, base_currency: str = "") -> list:
+    rows = []
+    try:
+        instruments = instrument_filter or system.get_instrument_list()
+    except Exception:
+        return rows
+
+    for inst in instruments:
+        try:
+            pos = system.accounts.get_buffered_position(inst, roundpositions=True)
+            pos = _clean_series(pd.Series(pos))
+            if pos.empty:
+                continue
+            diff = pos.diff().fillna(0)
+            trades = diff[diff != 0]
+
+            price = system.portfolio.get_contract_prices(inst)
+            fx = system.accounts.get_fx_rate(inst)
+            block_mult = system.accounts.get_value_of_block_price_move(inst)
+            costs = system.accounts.get_raw_cost_data(inst)
+
+            for ts, delta in trades.items():
+                ts_dt = pd.to_datetime(ts)
+                clean_px = _clean_series(price)
+                clean_fx = _clean_series(fx)
+                try:
+                    px = clean_px.reindex([ts_dt], method="ffill").iloc[0]
+                    fx_rate = clean_fx.reindex([ts_dt], method="ffill").iloc[0]
+                except Exception:
+                    continue
+                if pd.isna(px) or pd.isna(fx_rate):
+                    continue
+
+                trade_blocks = float(delta)
+                position_blocks = float(pos.loc[ts])
+                value_per_block = px * block_mult
+
+                spread_ccy = abs(trade_blocks) * costs.price_slippage * block_mult
+                per_block_comm = abs(trade_blocks) * costs.value_of_block_commission
+                per_trade_comm = costs.value_of_pertrade_commission
+                pct_comm = costs.percentage_cost * value_per_block * abs(trade_blocks)
+                commission_ccy = max(per_block_comm, per_trade_comm, pct_comm)
+                total_ccy = spread_ccy + commission_ccy
+
+                spread_base = spread_ccy * fx_rate
+                commission_base = commission_ccy * fx_rate
+                total_base = total_ccy * fx_rate
+                position_base = position_blocks * value_per_block * fx_rate
+
+                rows.append(
+                    [
+                        str(ts_dt.date()),
+                        inst,
+                        f"{int(trade_blocks):+d}",
+                        f"{int(position_blocks)}",
+                        f"{position_base:,.2f} {base_currency}".strip(),
+                        f"{spread_base:,.4f} {base_currency}".strip(),
+                        f"{commission_base:,.4f} {base_currency}".strip(),
+                        f"{total_base:,.4f} {base_currency}".strip(),
+                    ]
+                )
+        except Exception:
+            continue
+
+    rows.sort(key=lambda r: (r[0], r[1]))
+    if len(rows) > max_rows:
+        rows = rows[-max_rows:]
+    return rows
+
+
+def _build_spread_cost_rows(used_costs: dict, missing: list, instruments: Optional[Sequence[str]] = None) -> list:
     rows = []
     missing_set = set(missing)
-    ordered_instruments = (
-        list(instruments) if instruments is not None else list(used_costs.keys())
-    )
-    for inst in ordered_instruments:
+    ordered = list(instruments) if instruments is not None else list(used_costs.keys())
+    for inst in ordered:
         if inst not in used_costs:
             continue
         source = "fallback" if inst in missing_set else "db"
@@ -1580,71 +842,7 @@ def _build_spread_cost_rows(
     return rows
 
 
-def _build_summary_rows(stats: Any, portfolio, base_currency: str = "") -> list:
-    """
-    Build summary rows with metric name, value, UoM, and description.
-    Ensures Sharpe is included even if stats is malformed. Values are formatted
-    in plain decimal (non-scientific) where possible.
-    """
-    rows = []
-    descriptions = _metric_descriptions()
-
-    # account_curve.stats returns [list_of_pairs, comment]; handle that shape first
-    if isinstance(stats, (list, tuple)) and stats:
-        first = stats[0]
-        if isinstance(first, (list, tuple)):
-            try:
-                rows.extend(
-                    [
-                        _format_summary_row(k, v, descriptions, base_currency)
-                        for k, v in first
-                    ]
-                )
-            except Exception:
-                pass
-
-    # dict-like stats (e.g. statsDict)
-    if not rows and hasattr(stats, "items"):
-        try:
-            rows = [
-                _format_summary_row(k, v, descriptions, base_currency)
-                for k, v in stats.items()
-            ]
-        except Exception:
-            rows = []
-
-    # final fallback: try dict(...) coercion
-    if not rows:
-        try:
-            rows = [
-                _format_summary_row(k, v, descriptions, base_currency)
-                for k, v in dict(stats).items()
-            ]
-        except Exception:
-            rows = []
-
-    # Always append Sharpe (avoids losing it if stats parsing failed)
-    existing = {str(r[0]).lower() for r in rows}
-    if "sharpe" not in existing:
-        try:
-            rows.append(
-                _format_summary_row(
-                    "Sharpe",
-                    portfolio.sharpe(),
-                    descriptions,
-                    base_currency,
-                )
-            )
-        except Exception:
-            pass
-
-    return rows
-
-
 def _metric_descriptions() -> dict:
-    """
-    Short English descriptions for common metrics shown in the summary.
-    """
     return {
         "min": "Smallest daily return",
         "max": "Largest daily return",
@@ -1673,56 +871,20 @@ def _metric_descriptions() -> dict:
 
 
 def _metric_uom(metric: str, base_currency: str) -> str:
-    """
-    Unit of measure per metric: currency for P&L/returns, ratio/fraction otherwise.
-    """
     currency_metrics = {
-        "min",
-        "max",
-        "median",
-        "mean",
-        "std",
-        "ann_mean",
-        "ann_std",
-        "avg_drawdown",
-        "avg_return_to_drawdown",
-        "avg_loss",
-        "avg_gain",
-        "max_drawdown",
+        "min", "max", "median", "mean", "std", "ann_mean", "ann_std",
+        "avg_drawdown", "avg_return_to_drawdown", "avg_loss", "avg_gain", "max_drawdown",
     }
-    ratio_metrics = {
-        "sharpe",
-        "Sharpe",
-        "sortino",
-        "calmar",
-        "gaintolossratio",
-        "profitfactor",
-        "t_stat",
-        "skew",
-    }
+    ratio_metrics = {"sharpe", "Sharpe", "sortino", "calmar", "gaintolossratio", "profitfactor", "t_stat", "skew"}
     fraction_metrics = {"time_in_drawdown", "hitrate", "p_value"}
     if metric in currency_metrics:
         return base_currency or ""
-    if metric in ratio_metrics:
-        return "/"
-    if metric in fraction_metrics:
+    if metric in ratio_metrics or metric in fraction_metrics:
         return "/"
     return ""
 
 
-def _format_summary_row(metric, value, descriptions: dict, base_currency: str) -> list:
-    return [
-        str(metric),
-        _format_decimal(value),
-        _metric_uom(str(metric), base_currency),
-        descriptions.get(str(metric), ""),
-    ]
-
-
 def _format_decimal(value: Any) -> str:
-    """
-    Format numbers with fixed-point to avoid scientific notation.
-    """
     try:
         if isinstance(value, (int, np.integer)):
             return str(int(value))
@@ -1734,30 +896,733 @@ def _format_decimal(value: Any) -> str:
         return str(value)
 
 
-def _add_table_pages(pdf, rows, col_labels, title, rows_per_page=25, col_widths=None):
-    import matplotlib.pyplot as plt
+def _format_summary_row(metric, value, descriptions: dict, base_currency: str) -> list:
+    return [str(metric), _format_decimal(value), _metric_uom(str(metric), base_currency), descriptions.get(str(metric), "")]
 
-    _set_matplotlib_font_defaults()
 
-    total = len(rows)
-    pages = (total + rows_per_page - 1) // rows_per_page
-    for i in range(pages):
-        chunk = rows[i * rows_per_page : (i + 1) * rows_per_page]
-        fig, ax = plt.subplots(figsize=(8.27, 11.69))
-        ax.axis("off")
-        page_title = title if pages == 1 else f"{title} (page {i+1}/{pages})"
-        ax.set_title(page_title, fontsize=14, pad=10)
-        table = ax.table(
-            cellText=chunk,
-            colLabels=col_labels,
-            loc="upper left",
-            colWidths=col_widths,
+def _build_summary_rows(stats: Any, portfolio, base_currency: str = "") -> list:
+    rows = []
+    descriptions = _metric_descriptions()
+
+    if isinstance(stats, (list, tuple)) and stats:
+        first = stats[0]
+        if isinstance(first, (list, tuple)):
+            try:
+                rows.extend([_format_summary_row(k, v, descriptions, base_currency) for k, v in first])
+            except Exception:
+                pass
+
+    if not rows and hasattr(stats, "items"):
+        try:
+            rows = [_format_summary_row(k, v, descriptions, base_currency) for k, v in stats.items()]
+        except Exception:
+            rows = []
+
+    if not rows:
+        try:
+            rows = [_format_summary_row(k, v, descriptions, base_currency) for k, v in dict(stats).items()]
+        except Exception:
+            rows = []
+
+    existing = {str(r[0]).lower() for r in rows}
+    if "sharpe" not in existing:
+        try:
+            rows.append(_format_summary_row("Sharpe", portfolio.sharpe(), descriptions, base_currency))
+        except Exception:
+            pass
+    return rows
+
+
+def _print_stats(stats: Any, indent: str = ""):
+    if hasattr(stats, "to_dict"):
+        stats_dict = stats.to_dict()
+    elif isinstance(stats, dict):
+        stats_dict = stats
+    elif isinstance(stats, Iterable):
+        try:
+            stats_dict = dict(stats)
+        except Exception:
+            stats_dict = None
+    else:
+        stats_dict = None
+
+    if stats_dict is not None:
+        for k, v in stats_dict.items():
+            print(f"{indent}{k}: {v}")
+    else:
+        print(f"{indent}{stats}")
+
+
+def _safe_tail_print(obj: Any, n: int = 5, indent: str = ""):
+    if hasattr(obj, "tail"):
+        try:
+            print(obj.tail(n))
+            return
+        except Exception:
+            pass
+    print(f"{indent}{obj}")
+
+
+# =========================
+# Spread cost patching
+# =========================
+
+def _ensure_spread_costs(data, instruments, fallback_default: float):
+    scd = data.db_spread_cost_data
+    original_get = scd.get_spread_cost
+    missing = set()
+    used = {}
+
+    for inst in instruments:
+        try:
+            cost = original_get(inst)
+        except Exception:
+            cost = None
+        if cost is None or cost == 0.0:
+            missing.add(inst)
+            cost = fallback_default
+        used[inst] = cost
+
+    def patched_get_spread_cost(instrument_code: str) -> float:
+        return used.get(instrument_code, fallback_default)
+
+    scd.get_spread_cost = patched_get_spread_cost  # type: ignore[attr-defined]
+
+    if missing:
+        print(
+            f"Spread costs missing or zero for: {', '.join(sorted(missing))}. "
+            f"Using fallback={fallback_default}."
         )
-        table.auto_set_font_size(False)
-        table.set_fontsize(8)
-        table.scale(1, 1.2)
-        pdf.savefig(fig, bbox_inches="tight")
-        plt.close(fig)
+    return used, sorted(missing)
+
+
+# =========================
+# Report object + Policies (ReportLab)
+# =========================
+
+@dataclass
+class TablePolicy:
+    # wrap column idx -> approx chars
+    wrap_cols: dict[int, int] | None = None
+    # alignment idx -> LEFT/RIGHT/CENTER
+    align_cols: dict[int, str] | None = None
+    font_size: int = 8
+    # for correlation-like tables: max number of data columns per page chunk
+    max_data_cols: int = 6
+    # landscape threshold
+    landscape_if_cols_gte: int = 9
+    # first col width fraction bounds
+    first_col_min_frac: float = 0.28
+    first_col_max_frac: float = 0.55
+
+
+@dataclass
+class ReportBlock:
+    kind: str  # table | image | pagebreak | heading
+    payload: dict
+
+
+@dataclass
+class ReportSection:
+    title: str
+    blocks: list[ReportBlock]
+
+
+@dataclass
+class ReportDocument:
+    title: str
+    sections: list[ReportSection]
+
+
+def _safe_register_dejavu() -> str:
+    """Best-effort font registration. Falls back to Helvetica."""
+    try:
+        candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf",
+        ]
+        for p in candidates:
+            if Path(p).exists():
+                pdfmetrics.registerFont(TTFont("DejaVuSans", p))
+                return "DejaVuSans"
+    except Exception:
+        pass
+    return "Helvetica"
+
+
+def _wrap_paragraph(text: Any, style: ParagraphStyle) -> Paragraph:
+    s = "" if text is None else str(text)
+    s = s.replace("\n", "<br/>")
+    return Paragraph(s, style)
+
+
+def _estimate_first_col_fraction(headers: list, rows: list, min_frac: float, max_frac: float) -> float:
+    try:
+        first_len = max([len(str(headers[0]))] + [len(str(r[0])) for r in rows if r])
+        other_lens = []
+        for j in range(1, len(headers)):
+            col_len = max([len(str(headers[j]))] + [len(str(r[j])) for r in rows if len(r) > j])
+            other_lens.append(col_len)
+        if not other_lens:
+            return min(max_frac, max(min_frac, 0.40))
+        avg_other = max(6, int(sum(other_lens) / len(other_lens)))
+        denom = first_len + (len(headers) - 1) * avg_other
+        frac = (first_len / denom) if denom else 0.35
+        frac = frac + 0.06
+        return min(max_frac, max(min_frac, frac))
+    except Exception:
+        return min(max_frac, max(min_frac, 0.35))
+
+
+def _build_col_widths_points(page_width_pts: float, margin_pts: float, ncols: int, first_frac: float) -> list:
+    usable = max(100, page_width_pts - 2 * margin_pts)
+    if ncols <= 1:
+        return [usable]
+    first = usable * first_frac
+    rest = usable - first
+    per = rest / (ncols - 1)
+    return [first] + [per] * (ncols - 1)
+
+
+def _estimate_max_data_cols_from_width(
+    page_width_pts: float,
+    margin_pts: float,
+    first_col_frac: float,
+    *,
+    min_data_col_width_pts: float = 48.0,
+) -> int:
+    usable = max(100.0, page_width_pts - 2 * margin_pts)
+    first_w = usable * first_col_frac
+    remaining = max(0.0, usable - first_w)
+    return max(1, int(remaining // max(min_data_col_width_pts, 1.0)))
+
+
+def _split_wide_table(headers: list, rows: list, max_data_cols: int) -> list[dict]:
+    if not headers or not rows or len(headers) <= 2:
+        return [{"headers": headers, "rows": rows, "page": 1, "total_pages": 1}]
+
+    fixed_header = headers[0]
+    data_headers = headers[1:]
+    max_data_cols = max(1, int(max_data_cols))
+    total_chunks = (len(data_headers) + max_data_cols - 1) // max_data_cols
+    out = []
+    for idx in range(total_chunks):
+        start = idx * max_data_cols
+        end = start + max_data_cols
+        h = [fixed_header] + data_headers[start:end]
+        r = [[row[0]] + row[1 + start : 1 + end] for row in rows]
+        out.append({"headers": h, "rows": r, "page": idx + 1, "total_pages": total_chunks})
+    return out
+
+
+def _default_table_style(font_name: str, font_size: int) -> TableStyle:
+    return TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), font_size),
+        ("LEADING", (0, 0), (-1, -1), font_size + 2),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+    ])
+
+
+def _apply_alignment(ts: TableStyle, align_cols: dict[int, str] | None, nrows: int, ncols: int):
+    if not align_cols:
+        return
+    for col, align in align_cols.items():
+        if col < 0 or col >= ncols:
+            continue
+        a = str(align).upper().strip()
+        if a not in ("LEFT", "RIGHT", "CENTER"):
+            a = "LEFT"
+        ts.add("ALIGN", (col, 0), (col, nrows - 1), a)
+
+
+def _make_table_flowable(
+    title: str,
+    headers: list,
+    rows: list,
+    policy: TablePolicy,
+    font_name: str,
+    page_width_pts: float,
+    margin_pts: float,
+    first_col_frac: float | None = None,
+) -> list:
+    styles = getSampleStyleSheet()
+    hstyle = styles["Heading3"]
+    hstyle.fontName = font_name
+
+    body = ParagraphStyle(
+        name="Cell",
+        parent=styles["Normal"],
+        fontName=font_name,
+        fontSize=policy.font_size,
+        leading=policy.font_size + 2,
+        spaceAfter=0,
+        spaceBefore=0,
+    )
+
+    import textwrap
+    wrap_cols = policy.wrap_cols or {}
+    align_cols = policy.align_cols or {}
+
+    first_frac = first_col_frac
+    if first_frac is None:
+        first_frac = _estimate_first_col_fraction(headers, rows, policy.first_col_min_frac, policy.first_col_max_frac)
+
+    col_widths = _build_col_widths_points(page_width_pts, margin_pts, len(headers), first_frac)
+
+    def _effective_wrap_chars(col_idx: int, base_chars: int) -> int:
+        if col_idx >= len(col_widths):
+            return base_chars
+        try:
+            approx_chars = int(col_widths[col_idx] / max(1.0, policy.font_size * 0.55))
+            return max(base_chars, approx_chars)
+        except Exception:
+            return base_chars
+
+    def cell_to_para(col_idx: int, value: Any) -> Paragraph:
+        s = "" if value is None else str(value)
+        if col_idx in wrap_cols:
+            base_width_chars = int(wrap_cols[col_idx])
+            width_chars = _effective_wrap_chars(col_idx, base_width_chars)
+            if width_chars > 0 and len(s) > width_chars:
+                lines = []
+                for part in s.split("\n"):
+                    # IMPORTANT: allow long tokens like accel.accel_calc_v fast_wrap to break
+                    wrapped = textwrap.wrap(
+                        part,
+                        width=width_chars,
+                        break_long_words=True,
+                        break_on_hyphens=True,
+                    )
+                    lines.extend(wrapped or [""])
+                s = "\n".join(lines)
+        return _wrap_paragraph(s, body)
+
+    # header row
+    data = [[cell_to_para(j, h) for j, h in enumerate(headers)]]
+    for r in rows:
+        data.append([cell_to_para(j, r[j] if j < len(r) else "") for j in range(len(headers))])
+
+    ncols = len(headers)
+    nrows = len(data)
+
+    t = Table(data, colWidths=col_widths, repeatRows=1)
+    ts = _default_table_style(font_name=font_name, font_size=policy.font_size)
+    _apply_alignment(ts, align_cols, nrows, ncols)
+    t.setStyle(ts)
+
+    return [Paragraph(f"<b>{title}</b>", hstyle), Spacer(1, 6), t, Spacer(1, 12)]
+
+
+def _render_reportlab_pdf(output_path: Path, report: ReportDocument):
+    font_name = _safe_register_dejavu()
+
+    page_portrait = A4
+    page_landscape = landscape(A4)
+    margin = 1.2 * cm
+
+    def footer(canvas, doc):
+        canvas.saveState()
+        canvas.setFont(font_name, 8)
+        canvas.drawRightString(doc.pagesize[0] - margin, 0.8 * cm, f"Page {doc.page}")
+        canvas.restoreState()
+
+    doc = BaseDocTemplate(
+        str(output_path),
+        pagesize=page_portrait,
+        leftMargin=margin,
+        rightMargin=margin,
+        topMargin=margin,
+        bottomMargin=margin,
+    )
+
+    frame_p = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="portrait_frame")
+    frame_l = Frame(margin, margin, page_landscape[0] - 2 * margin, page_landscape[1] - 2 * margin, id="landscape_frame")
+
+    tpl_p = PageTemplate(id="PORTRAIT", frames=[frame_p], onPage=footer, pagesize=page_portrait)
+    tpl_l = PageTemplate(id="LANDSCAPE", frames=[frame_l], onPage=footer, pagesize=page_landscape)
+    doc.addPageTemplates([tpl_p, tpl_l])
+
+    styles = getSampleStyleSheet()
+    title_style = styles["Title"]
+    title_style.fontName = font_name
+
+    story = [Paragraph(report.title, title_style), Spacer(1, 12)]
+    current_template = "PORTRAIT"
+
+    def ensure_template(template_id: str):
+        nonlocal current_template
+        template_id = template_id.upper()
+        if template_id == current_template:
+            return
+        story.append(NextPageTemplate(template_id))
+        story.append(PageBreak())
+        current_template = template_id
+
+    for si, section in enumerate(report.sections):
+        section_heading_rendered = False
+
+        def render_section_heading():
+            nonlocal section_heading_rendered
+            if section_heading_rendered:
+                return
+            story.append(Paragraph(section.title, styles["Heading2"]))
+            story.append(Spacer(1, 10))
+            section_heading_rendered = True
+
+        for blk in section.blocks:
+            kind = blk.kind
+            payload = blk.payload
+
+            if kind == "pagebreak":
+                render_section_heading()
+                story.append(PageBreak())
+                continue
+
+            if kind == "heading":
+                render_section_heading()
+                story.append(Paragraph(payload["text"], styles["Heading3"]))
+                story.append(Spacer(1, 6))
+                continue
+
+            if kind == "table":
+                headers = payload["headers"]
+                rows = payload["rows"]
+                policy: TablePolicy = payload["policy"]
+                tb_title = payload.get("title", "")
+
+                ncols = len(headers) if headers else 0
+                use_landscape = True
+                target_template = "LANDSCAPE" if use_landscape else "PORTRAIT"
+                ensure_template(target_template)
+                render_section_heading()
+
+                # correlation-like splitting
+                chunks = payload.get("chunks")
+                if chunks is None:
+                    first_frac = _estimate_first_col_fraction(
+                        headers, rows, policy.first_col_min_frac, policy.first_col_max_frac
+                    )
+                    pagesize = page_landscape if use_landscape else page_portrait
+                    page_width_pts = pagesize[0]
+
+                    width_based_cols = _estimate_max_data_cols_from_width(
+                        page_width_pts, margin, first_frac, min_data_col_width_pts=46.0
+                    )
+                    effective_max_data_cols = max(policy.max_data_cols, width_based_cols)
+
+                    if payload.get("split_wide", False) and ncols > (effective_max_data_cols + 1):
+                        chunks = _split_wide_table(headers, rows, effective_max_data_cols)
+                    else:
+                        chunks = [{"headers": headers, "rows": rows, "page": 1, "total_pages": 1}]
+
+                pagesize = page_landscape if use_landscape else page_portrait
+                page_width_pts = pagesize[0]
+
+                for ch in chunks:
+                    ch_title = tb_title
+                    if ch.get("total_pages", 1) > 1:
+                        ch_title = f"{tb_title} (block {ch['page']}/{ch['total_pages']})"
+                    ch_headers = ch["headers"]
+                    ch_rows = ch["rows"]
+                    ch_first_frac = _estimate_first_col_fraction(
+                        ch_headers, ch_rows, policy.first_col_min_frac, policy.first_col_max_frac
+                    )
+                    story.extend(
+                        _make_table_flowable(
+                            title=ch_title,
+                            headers=ch_headers,
+                            rows=ch_rows,
+                            policy=policy,
+                            font_name=font_name,
+                            page_width_pts=page_width_pts,
+                            margin_pts=margin,
+                            first_col_frac=ch_first_frac,
+                        )
+                    )
+                continue
+
+            if kind == "image":
+                img_path = Path(payload["path"])
+                if not img_path.exists():
+                    continue
+                use_landscape = bool(payload.get("landscape", True))
+                ensure_template("LANDSCAPE" if use_landscape else "PORTRAIT")
+                render_section_heading()
+
+                pagesize = page_landscape if use_landscape else page_portrait
+                max_w = pagesize[0] - 2 * margin
+                max_h = pagesize[1] - 2 * margin - 1.0 * cm
+
+                story.append(RLImage(str(img_path), width=max_w, height=max_h, kind="proportional"))
+                story.append(Spacer(1, 12))
+                continue
+
+        # page break after section (avoid last one)
+        if si < len(report.sections) - 1:
+            story.append(PageBreak())
+
+    doc.build(story)
+
+
+def _build_report_document(
+    *,
+    summary_rows: list,
+    per_inst_rows: list,
+    per_rule_rows: list,
+    cost_rows: list,
+    notional_rows: list,
+    trades_rows: list,
+    figure_paths: list,
+    per_inst_headers: Optional[list] = None,
+    per_rule_headers: Optional[list] = None,
+    rule_variation_rows: Optional[list] = None,
+    rule_variation_headers: Optional[list] = None,
+    rule_correlation_rows: Optional[list] = None,
+    rule_correlation_headers: Optional[list] = None,
+) -> ReportDocument:
+
+    per_inst_labels = per_inst_headers or ["Name", "Total", "CAGR", "Vol", "Sharpe", "MaxDD"]
+    per_rule_labels = per_rule_headers or ["Name", "Total", "CAGR", "Vol", "Sharpe", "MaxDD"]
+    rule_variation_rows = rule_variation_rows or []
+    rule_variation_labels = rule_variation_headers or per_rule_labels
+    rule_correlation_rows = rule_correlation_rows or []
+    rule_correlation_labels = rule_correlation_headers or []
+
+    def numeric_right_align(headers: list) -> dict[int, str]:
+        return {0: "LEFT", **{i: "RIGHT" for i in range(1, len(headers))}}
+
+    sections: list[ReportSection] = []
+
+    if summary_rows:
+        sections.append(
+            ReportSection(
+                title="Portfolio summary",
+                blocks=[
+                    ReportBlock(
+                        kind="table",
+                        payload=dict(
+                            title="Portfolio summary",
+                            headers=["Metric", "Value", "UoM", "Description"],
+                            rows=summary_rows,
+                            policy=TablePolicy(
+                                wrap_cols={0: 24, 3: 52},
+                                align_cols={0: "LEFT", 1: "RIGHT", 2: "CENTER", 3: "LEFT"},
+                                font_size=8,
+                                landscape_if_cols_gte=99,
+                                first_col_min_frac=0.26,
+                                first_col_max_frac=0.40,
+                            ),
+                            landscape=False,
+                        ),
+                    )
+                ],
+            )
+        )
+
+    if per_inst_rows:
+        sections.append(
+            ReportSection(
+                title="Performance",
+                blocks=[
+                    ReportBlock(
+                        kind="table",
+                        payload=dict(
+                            title="Performance per instrument (net % returns)",
+                            headers=per_inst_labels,
+                            rows=per_inst_rows,
+                            policy=TablePolicy(
+                                wrap_cols={0: 18},
+                                align_cols=numeric_right_align(per_inst_labels),
+                                font_size=8,
+                                landscape_if_cols_gte=10,
+                                first_col_min_frac=0.30,
+                                first_col_max_frac=0.55,
+                            ),
+                            landscape=False,
+                        ),
+                    )
+                ],
+            )
+        )
+
+    if per_rule_rows:
+        sections.append(
+            ReportSection(
+                title="Rule performance",
+                blocks=[
+                    ReportBlock(
+                        kind="table",
+                        payload=dict(
+                            title="Performance per rule (aggregated variations)",
+                            headers=per_rule_labels,
+                            rows=per_rule_rows,
+                            policy=TablePolicy(
+                                # this is one of the problematic tables in your sample:
+                                # long names like 'cs_mm.cross_sectional_mean_reversion' need real wrap + row height
+                                wrap_cols={0: 20, 1: 80},
+                                align_cols=numeric_right_align(per_rule_labels),
+                                font_size=8,
+                                landscape_if_cols_gte=10,
+                                first_col_min_frac=0.20,
+                                first_col_max_frac=0.28,
+                            ),
+                            landscape=False,
+                        ),
+                    )
+                ],
+            )
+        )
+
+    if rule_variation_rows:
+        sections.append(
+            ReportSection(
+                title="Rule variations",
+                blocks=[
+                    ReportBlock(
+                        kind="table",
+                        payload=dict(
+                            title="Performance per rule variation",
+                            headers=rule_variation_labels,
+                            rows=rule_variation_rows,
+                            policy=TablePolicy(
+                                wrap_cols={0: 20},
+                                align_cols=numeric_right_align(rule_variation_labels),
+                                font_size=8,
+                                landscape_if_cols_gte=10,
+                                first_col_min_frac=0.20,
+                                first_col_max_frac=0.66,
+                            ),
+                            landscape=False,
+                        ),
+                    )
+                ],
+            )
+        )
+
+    if cost_rows:
+        sections.append(
+            ReportSection(
+                title="Costs",
+                blocks=[
+                    ReportBlock(
+                        kind="table",
+                        payload=dict(
+                            title="Spread costs used",
+                            headers=["Instrument", "Source", "Spread"],
+                            rows=cost_rows,
+                            policy=TablePolicy(
+                                wrap_cols={0: 24},
+                                align_cols={0: "LEFT", 1: "CENTER", 2: "RIGHT"},
+                                font_size=8,
+                                landscape_if_cols_gte=99,
+                                first_col_min_frac=0.38,
+                                first_col_max_frac=0.58,
+                            ),
+                            landscape=False,
+                        ),
+                    )
+                ],
+            )
+        )
+
+    if notional_rows:
+        sections.append(
+            ReportSection(
+                title="Positions",
+                blocks=[
+                    ReportBlock(
+                        kind="table",
+                        payload=dict(
+                            title="Notional positions (annual average)",
+                            headers=["Instrument", "Year", "Avg notional"],
+                            rows=notional_rows,
+                            policy=TablePolicy(
+                                wrap_cols={0: 24},
+                                align_cols={0: "LEFT", 1: "CENTER", 2: "RIGHT"},
+                                font_size=8,
+                                landscape_if_cols_gte=99,
+                                first_col_min_frac=0.40,
+                                first_col_max_frac=0.60,
+                            ),
+                            landscape=False,
+                        ),
+                    )
+                ],
+            )
+        )
+
+    if trades_rows:
+        headers = ["Date", "Instrument", "Trade", "New pos", "Pos (base)", "Spread", "Commission", "Total cost"]
+        sections.append(
+            ReportSection(
+                title="Trades",
+                blocks=[
+                    ReportBlock(
+                        kind="table",
+                        payload=dict(
+                            title="Executed trades (from buffered positions)",
+                            headers=headers,
+                            rows=trades_rows,
+                            policy=TablePolicy(
+                                wrap_cols={1: 14, 4: 18},
+                                align_cols={0: "LEFT", 1: "LEFT", 2: "RIGHT", 3: "RIGHT", 4: "RIGHT", 5: "RIGHT", 6: "RIGHT", 7: "RIGHT"},
+                                font_size=7,
+                                landscape_if_cols_gte=7,
+                                first_col_min_frac=0.14,
+                                first_col_max_frac=0.20,
+                            ),
+                            landscape=True,
+                        ),
+                    )
+                ],
+            )
+        )
+
+    if rule_correlation_rows and rule_correlation_labels:
+        sections.append(
+            ReportSection(
+                title="Correlations",
+                blocks=[
+                    ReportBlock(
+                        kind="table",
+                        payload=dict(
+                            title="Correlation between strategies/rules",
+                            headers=rule_correlation_labels,
+                            rows=rule_correlation_rows,
+                            split_wide=True,
+                            policy=TablePolicy(
+                                wrap_cols={0: 24},
+                                align_cols={0: "LEFT", **{i: "RIGHT" for i in range(1, len(rule_correlation_labels))}},
+                                font_size=7,
+                                max_data_cols=12,
+                                landscape_if_cols_gte=4,
+                                first_col_min_frac=0.34,
+                                first_col_max_frac=0.62,
+                            ),
+                            landscape=True,
+                        ),
+                    )
+                ],
+            )
+        )
+
+    fig_blocks: list[ReportBlock] = []
+    for p in figure_paths or []:
+        pp = Path(p)
+        if pp.exists():
+            fig_blocks.append(ReportBlock(kind="image", payload={"path": str(pp), "caption": pp.name, "landscape": True}))
+    if fig_blocks:
+        sections.append(ReportSection(title="Figures", blocks=fig_blocks))
+
+    return ReportDocument(title="pysystemtrade backtest report", sections=sections)
 
 
 def _build_unified_pdf(
@@ -1776,134 +1641,371 @@ def _build_unified_pdf(
     rule_correlation_rows: Optional[list] = None,
     rule_correlation_headers: Optional[list] = None,
 ):
-    try:
-        import matplotlib.pyplot as plt
-        from matplotlib.backends.backend_pdf import PdfPages
-        import matplotlib.image as mpimg
+    report = _build_report_document(
+        summary_rows=summary_rows,
+        per_inst_rows=per_inst_rows,
+        per_rule_rows=per_rule_rows,
+        cost_rows=cost_rows,
+        notional_rows=notional_rows,
+        trades_rows=trades_rows,
+        figure_paths=figure_paths,
+        per_inst_headers=per_inst_headers,
+        per_rule_headers=per_rule_headers,
+        rule_variation_rows=rule_variation_rows,
+        rule_variation_headers=rule_variation_headers,
+        rule_correlation_rows=rule_correlation_rows,
+        rule_correlation_headers=rule_correlation_headers,
+    )
+    _render_reportlab_pdf(output_path, report)
 
-        per_inst_labels = per_inst_headers or [
-            "Name",
-            "Total",
-            "CAGR",
-            "Vol",
-            "Sharpe",
-            "MaxDD",
-        ]
-        per_rule_labels = per_rule_headers or [
-            "Name",
-            "Total",
-            "CAGR",
-            "Vol",
-            "Sharpe",
-            "MaxDD",
-        ]
-        rule_variation_rows = rule_variation_rows or []
-        rule_variation_labels = rule_variation_headers or per_rule_labels
-        rule_correlation_rows = rule_correlation_rows or []
-        rule_correlation_labels = rule_correlation_headers or []
 
-        with PdfPages(output_path) as pdf:
-            if summary_rows:
-                _add_table_pages(
-                    pdf,
-                    summary_rows,
-                    ["Metric", "Value", "UoM", "Description"],
-                    "Portfolio summary",
-                    rows_per_page=30,
-                    col_widths=[0.28, 0.16, 0.10, 0.46],
+# =========================
+# Cache helpers
+# =========================
+
+def _alternate_cache_path(path: Path) -> Optional[Path]:
+    suffix = path.suffix.lower()
+    if suffix == ".pckz":
+        alt = path.with_suffix(".pck")
+    elif suffix == ".pck":
+        alt = path.with_suffix(".pckz")
+    else:
+        return None
+    return alt if alt.exists() else None
+
+
+def _infer_cache_compress(path: Path, default: bool) -> bool:
+    suffix = path.suffix.lower()
+    if suffix == ".pckz":
+        return True
+    if suffix == ".pck":
+        return False
+    return default
+
+
+def _estimated_attr_names_from_config(config_obj: Config) -> list:
+    names = []
+    if getattr(config_obj, "use_instrument_weight_estimates", False):
+        names.append("instrument_weights")
+    if getattr(config_obj, "use_instrument_div_mult_estimates", False):
+        names.append("instrument_div_multiplier")
+    if getattr(config_obj, "use_forecast_weight_estimates", False):
+        names.append("forecast_weights")
+    if getattr(config_obj, "use_forecast_div_mult_estimates", False):
+        names.append("forecast_div_multiplier")
+    if getattr(config_obj, "use_forecast_scale_estimates", False):
+        names.append("forecast_scalars")
+    return names
+
+
+def _resolve_capital_multiplier(arg: str) -> str:
+    aliases = {
+        "fixed": f"{fixed_capital.__module__}.{fixed_capital.__name__}",
+        "full": f"{full_compounding.__module__}.{full_compounding.__name__}",
+        "half": f"{half_compounding.__module__}.{half_compounding.__name__}",
+    }
+    return aliases.get(arg.strip().lower(), arg)
+
+
+# =========================
+# Runner
+# =========================
+
+def _filter_instruments(instruments: Iterable[str], desired: Optional[Sequence[str]]) -> list:
+    full_list = list(instruments or [])
+    if not desired:
+        return full_list
+    desired_set = set(desired)
+    filtered = [inst for inst in full_list if inst in desired_set]
+    missing = sorted(desired_set - set(full_list))
+    if missing:
+        print(f"Instruments not found and ignored: {', '.join(missing)}")
+    return filtered
+
+
+def run_backtest(backtest_config: BacktestConfig, data_factory=dbFuturesSimData, system_factory=futures_system) -> BacktestResult:
+    cfg = backtest_config.with_defaults()
+    logger = logging.getLogger(__name__)
+    results_dir = cfg.results_dir
+    timestamp = cfg.timestamp
+
+    log_path = (results_dir / f"backtest_output_{timestamp}.log") if cfg.include_debug_log else None
+
+    with _tee_output(log_path):
+        results_dir.mkdir(parents=True, exist_ok=True)
+        _set_matplotlib_font_defaults()
+        data = data_factory()
+
+        config_obj = Config(str(cfg.config_path))
+
+        if cfg.use_db_capital:
+            strategy_name = cfg.strategy_name or cfg.config_path.stem
+            capital_data_source = data if hasattr(data, "add_class_object") else dataBlob()
+            try:
+                capital_data = dataCapital(capital_data_source)
+                notional_trading_capital = capital_data.get_current_capital_for_strategy(strategy_name)
+            except missingData as err:
+                raise Exception(f"Capital data is missing for strategy '{strategy_name}': can't run backtest") from err
+            base_currency = dataCurrency(capital_data_source).get_base_currency()
+            config_obj.notional_trading_capital = notional_trading_capital
+            config_obj.base_currency = base_currency
+            msg = f"Using DB capital for {strategy_name}: {base_currency} {notional_trading_capital:,.2f}"
+            print(msg)
+            logger.info(msg)
+
+        if cfg.capital_multiplier:
+            cm_func = _resolve_capital_multiplier(cfg.capital_multiplier)
+            config_obj.capital_multiplier = {"func": cm_func}
+            logger.info(f"Applied capital multiplier override: {cm_func}")
+
+        config_instruments = list(getattr(config_obj, "instruments", []) or [])
+        weights_dict = getattr(config_obj, "instrument_weights", {}) or {}
+        weights_instruments = list(weights_dict.keys())
+        all_instruments = list(data.get_instrument_list())
+
+        base_universe = config_instruments if config_instruments else (weights_instruments or all_instruments)
+        instrument_list = _filter_instruments(base_universe, cfg.instrument_filter)
+        if cfg.instrument_filter and not instrument_list:
+            print("Instrument filter empty: using base instrument universe.")
+            instrument_list = base_universe
+
+        spread_costs_used, spread_costs_missing = _ensure_spread_costs(
+            data, instrument_list, fallback_default=cfg.fallback_spread
+        )
+
+        system = system_factory(data=data, config=config_obj)
+
+        cache_loaded = False
+        cache_items_loaded = 0
+        cache_path = cfg.cache_file if cfg.use_cache else None
+        if cfg.use_cache and cache_path is not None:
+            effective_path = cache_path if cache_path.exists() else _alternate_cache_path(cache_path)
+            if effective_path is None:
+                msg = f"No cache found at {cache_path}; building results from scratch."
+                print(msg)
+                logger.info(msg)
+            else:
+                try:
+                    system.config.backtest_compress = _infer_cache_compress(effective_path, cfg.cache_compress)
+                except Exception:
+                    pass
+                try:
+                    system.cache.unpickle(str(effective_path))
+                    cache_loaded = True
+                    cache_path = effective_path
+                    try:
+                        cache_items_loaded = len(system.cache.get_items_with_data())
+                    except Exception:
+                        cache_items_loaded = 0
+                    msg = f"Loaded cached system state from {effective_path} ({cache_items_loaded} cached items)."
+                    print(msg)
+                    logger.info(msg)
+                except Exception as err:
+                    msg = f"Cache load failed from {effective_path} ({err}); continuing without cache."
+                    print(msg)
+                    logger.warning(msg)
+
+        if cfg.use_cache and cache_loaded and cache_items_loaded == 0:
+            msg = "Cache loaded but contained 0 items; computations will run from scratch."
+            print(msg)
+            logger.info(msg)
+
+        portfolio = system.accounts.portfolio()
+        instruments_for_output = instrument_list or system.get_instrument_list()
+
+        print(f"Instruments: {', '.join(instruments_for_output)}")
+        print("\nLatest portfolio stats:")
+        stats = portfolio.stats()
+        _print_stats(stats)
+
+        print(f"\nSharpe: {portfolio.sharpe():.2f}")
+        print("\nEquity curve (last 5):")
+        curve = portfolio.curve()
+        _safe_tail_print(curve, 5)
+
+        print("\nDrawdown (last 5):")
+        drawdown = portfolio.drawdown()
+        _safe_tail_print(drawdown, 5)
+
+        print("\nRolling annualised std (last 5):")
+        rolling_std = portfolio.rolling_ann_std()
+        _safe_tail_print(rolling_std, 5)
+
+        base_currency = getattr(config_obj, "base_currency", "") or ""
+
+        print("\nPerformance per instrument (net % returns):")
+        per_inst_rows, per_inst_headers = _print_per_instrument_perf(portfolio, instrument_filter=instrument_list)
+
+        try:
+            rule_perf_tables = _collect_rule_performance_tables(system, portfolio, base_currency=base_currency, verbose=True)
+        except Exception as err:
+            print(f"Rule-level performance skipped ({err})")
+            rule_perf_tables = {
+                "group_rows": [],
+                "group_headers": [],
+                "variation_rows": [],
+                "variation_headers": [],
+                "correlation_rows": [],
+                "correlation_headers": [],
+                "group_curves": {},
+            }
+
+        per_rule_rows = rule_perf_tables["group_rows"]
+        per_rule_headers = rule_perf_tables["group_headers"]
+        rule_variation_rows = rule_perf_tables["variation_rows"]
+        rule_variation_headers = rule_perf_tables["variation_headers"]
+        rule_correlation_rows = rule_perf_tables["correlation_rows"]
+        rule_correlation_headers = rule_perf_tables["correlation_headers"]
+        rule_group_curves = rule_perf_tables["group_curves"]
+
+        figures: dict[str, Path] = {}
+        if cfg.include_plots:
+            figures["equity"] = results_dir / f"equity_curve_{timestamp}.png"
+            figures["drawdown"] = results_dir / f"drawdown_{timestamp}.png"
+            figures["rolling_std"] = results_dir / f"rolling_ann_std_{timestamp}.png"
+            figures["notional_uncapped"] = results_dir / f"notional_positions_uncapped_{timestamp}.png"
+            figures["notional_capped"] = results_dir / f"notional_positions_capped_{timestamp}.png"
+            figures["buffered_positions"] = results_dir / f"buffered_positions_{timestamp}.png"
+            if rule_group_curves:
+                figures["rule_groups"] = results_dir / f"rule_groups_{timestamp}.png"
+
+            _plot_series(curve, figures["equity"], title="Equity curve")
+            _plot_series(drawdown, figures["drawdown"], title="Drawdown")
+            _plot_series(rolling_std, figures["rolling_std"], title="Rolling annualised std")
+            _plot_notional_positions(system, figures["notional_uncapped"], instruments_for_output, clip_bounds=None)
+            _plot_notional_positions(system, figures["notional_capped"], instruments_for_output, clip_bounds=(-20, 20))
+            _plot_buffered_positions(system, figures["buffered_positions"], instruments_for_output, clip_bounds=None)
+            if rule_group_curves:
+                _plot_multiple_series(
+                    rule_group_curves,
+                    figures["rule_groups"],
+                    title="P&L for trading rule (aggregated variations)",
+                    ylabel=f"P&L {base_currency}".strip(),
                 )
 
-            if per_inst_rows:
-                _add_table_pages(
-                    pdf,
-                    per_inst_rows,
-                    per_inst_labels,
-                    "Performance per instrument (net % returns)",
-                    rows_per_page=25,
+        qs_html = (results_dir / f"backtest_report_qs_{timestamp}.html") if cfg.include_quantstats else None
+        if cfg.include_quantstats:
+            _quantstats_report(portfolio.percent, qs_html)
+
+        per_inst_rows = sorted(per_inst_rows, key=lambda r: r[0]) if per_inst_rows else []
+        per_rule_rows = sorted(per_rule_rows, key=lambda r: r[0]) if per_rule_rows else []
+        rule_variation_rows = sorted(rule_variation_rows, key=lambda r: r[0]) if rule_variation_rows else []
+
+        per_inst_headers = per_inst_headers or ["Name", "Total", "CAGR", "Vol", "Sharpe", "MaxDD"]
+        per_rule_headers = per_rule_headers or ["Name", "P&L", "Total", "CAGR", "Vol", "Sharpe", "MaxDD", "t-stat", "p-value"]
+        rule_variation_headers = rule_variation_headers or per_rule_headers
+
+        cost_rows = _build_spread_cost_rows(spread_costs_used, spread_costs_missing, instruments_for_output)
+        notional_rows = _collect_notional_positions_by_year(system, instruments_for_output)
+        trades_rows = _collect_trades(system, instrument_filter=instruments_for_output, max_rows=200, base_currency=base_currency)
+        summary_rows = _build_summary_rows(stats, portfolio, base_currency=base_currency)
+
+        pdf_path = (results_dir / f"backtest_report_{timestamp}.pdf") if cfg.include_pdf else None
+        report_txt_path = (results_dir / f"backtest_report_{timestamp}.txt") if cfg.include_report_txt else None
+
+        if cfg.include_pdf and pdf_path is not None:
+            _build_unified_pdf(
+                output_path=pdf_path,
+                summary_rows=summary_rows,
+                per_inst_rows=per_inst_rows,
+                per_rule_rows=per_rule_rows,
+                cost_rows=cost_rows,
+                notional_rows=notional_rows,
+                trades_rows=trades_rows,
+                figure_paths=list(figures.values()),
+                per_inst_headers=per_inst_headers,
+                per_rule_headers=per_rule_headers,
+                rule_variation_rows=rule_variation_rows,
+                rule_variation_headers=rule_variation_headers,
+                rule_correlation_rows=rule_correlation_rows or [],
+                rule_correlation_headers=rule_correlation_headers or [],
+            )
+            print(f"Saved unified report: {pdf_path}")
+
+        if cfg.include_report_txt and report_txt_path is not None:
+            _write_report_txt(
+                output_path=report_txt_path,
+                summary_rows=summary_rows,
+                per_inst_rows=per_inst_rows,
+                per_rule_rows=per_rule_rows,
+                cost_rows=cost_rows,
+                notional_rows=notional_rows,
+                trades_rows=trades_rows,
+                per_inst_headers=per_inst_headers,
+                per_rule_headers=per_rule_headers,
+                rule_variation_rows=rule_variation_rows,
+                rule_variation_headers=rule_variation_headers,
+                rule_correlation_rows=rule_correlation_rows or [],
+                rule_correlation_headers=rule_correlation_headers or [],
+            )
+
+        if cfg.include_plots and not cfg.keep_intermediate_figs:
+            for tmp_fig in figures.values():
+                try:
+                    tmp_fig.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        figures_for_output = {name: path for name, path in figures.items() if path.exists()} if cfg.include_plots else {}
+
+        estimates_yaml = None
+        estimated_names = _estimated_attr_names_from_config(config_obj)
+        if cfg.export_estimates and estimated_names:
+            estimates_yaml = results_dir / f"{cfg.config_path.stem}_estimated_params_{timestamp}.yaml"
+            try:
+                systemDiag(system).yaml_config_with_estimated_parameters(
+                    str(estimates_yaml),
+                    attr_names=estimated_names,
                 )
+                print(f"Saved estimated parameters ({', '.join(estimated_names)}) to {estimates_yaml}")
+            except Exception as err:
+                print(f"Estimated parameters export skipped ({err})")
+                estimates_yaml = None
 
-            if per_rule_rows:
-                _add_table_pages(
-                    pdf,
-                    per_rule_rows,
-                    per_rule_labels,
-                    "Performance per rule (aggregated variations)",
-                    rows_per_page=20,
-                )
+        outputs = BacktestOutputs(
+            results_dir=results_dir,
+            figures=figures_for_output,
+            quantstats_report=qs_html,
+            pdf_report=pdf_path,
+            report_txt=report_txt_path,
+            debug_log=log_path,
+            estimates_yaml=estimates_yaml,
+        )
 
-            if rule_variation_rows:
-                _add_table_pages(
-                    pdf,
-                    rule_variation_rows,
-                    rule_variation_labels,
-                    "Performance per rule variation",
-                    rows_per_page=20,
-                )
+        if cfg.use_cache and cache_path is not None:
+            try:
+                try:
+                    system.config.backtest_compress = _infer_cache_compress(cache_path, cfg.cache_compress)
+                except Exception:
+                    pass
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                system.cache.pickle(str(cache_path))
+                verb = "Updated" if cache_loaded else "Saved"
+                print(f"{verb} system cache at {cache_path}")
+            except Exception as err:
+                print(f"Cache save skipped ({err})")
 
-            if cost_rows:
-                _add_table_pages(
-                    pdf,
-                    cost_rows,
-                    ["Instrument", "Source", "Spread"],
-                    "Spread costs used",
-                    rows_per_page=35,
-                )
+        return BacktestResult(
+            system=system,
+            summary_rows=summary_rows,
+            per_inst_rows=per_inst_rows,
+            per_rule_rows=per_rule_rows,
+            per_rule_headers=per_rule_headers,
+            rule_variation_rows=rule_variation_rows,
+            rule_variation_headers=rule_variation_headers,
+            rule_correlation_rows=rule_correlation_rows or [],
+            rule_correlation_headers=rule_correlation_headers or [],
+            per_inst_headers=per_inst_headers,
+            cost_rows=cost_rows,
+            notional_rows=notional_rows,
+            trades_rows=trades_rows,
+            outputs=outputs,
+        )
 
-            if notional_rows:
-                _add_table_pages(
-                    pdf,
-                    notional_rows,
-                    ["Instrument", "Year", "Avg notional"],
-                    "Notional positions (annual average)",
-                    rows_per_page=35,
-                )
 
-            if trades_rows:
-                # Note: only the most recent max_rows trades are shown to keep the report concise.
-                _add_table_pages(
-                    pdf,
-                    trades_rows,
-                    [
-                        "Date",
-                        "Instrument",
-                        "Trade",
-                        "New pos",
-                        "Pos (base)",
-                        "Spread",
-                        "Commission",
-                        "Total cost",
-                    ],
-                    "Executed trades (from buffered positions)",
-                    rows_per_page=30,
-                    col_widths=[0.12, 0.14, 0.08, 0.08, 0.18, 0.12, 0.14, 0.14],
-                )
-
-            if rule_correlation_rows and rule_correlation_labels:
-                _add_table_pages(
-                    pdf,
-                    rule_correlation_rows,
-                    rule_correlation_labels,
-                    "Correlazione tra strategie/rule",
-                    rows_per_page=25,
-                )
-
-            for fig_path in figure_paths:
-                if fig_path is None:
-                    continue
-                if not Path(fig_path).exists():
-                    continue
-                img = mpimg.imread(fig_path)
-                fig, ax = plt.subplots(figsize=(11.69, 8.27))
-                ax.axis("off")
-                ax.imshow(img)
-                ax.set_title(Path(fig_path).name, fontsize=12, pad=10)
-                pdf.savefig(fig, bbox_inches="tight")
-                plt.close(fig)
-
-        print(f"Saved unified report: {output_path}")
-    except Exception as err:
-        print(f"Unified PDF report skipped ({err})")
-
+# =========================
+# Text report
+# =========================
 
 def _write_report_txt(
     output_path: Path,
@@ -1920,9 +2022,6 @@ def _write_report_txt(
     rule_correlation_rows: Optional[list] = None,
     rule_correlation_headers: Optional[list] = None,
 ):
-    """
-    Write a plain-text summary for easier debugging.
-    """
     sections = []
 
     def add_table(title: str, rows: list, headers: list):
@@ -1932,187 +2031,79 @@ def _write_report_txt(
         sections.append(" | ".join(headers))
         sections.append("-" * 80)
         for row in rows:
-            sections.append(" | ".join(row))
-        sections.append("")  # blank line between tables
+            sections.append(" | ".join([str(x) for x in row]))
+        sections.append("")
 
-    per_inst_labels = per_inst_headers or [
-        "Name",
-        "Total",
-        "CAGR",
-        "Vol",
-        "Sharpe",
-        "MaxDD",
-    ]
-    per_rule_labels = per_rule_headers or [
-        "Name",
-        "Total",
-        "CAGR",
-        "Vol",
-        "Sharpe",
-        "MaxDD",
-    ]
+    per_inst_labels = per_inst_headers or ["Name", "Total", "CAGR", "Vol", "Sharpe", "MaxDD"]
+    per_rule_labels = per_rule_headers or ["Name", "Total", "CAGR", "Vol", "Sharpe", "MaxDD"]
     rule_variation_rows = rule_variation_rows or []
     rule_variation_labels = rule_variation_headers or per_rule_labels
     rule_correlation_rows = rule_correlation_rows or []
     rule_correlation_labels = rule_correlation_headers or []
 
-    add_table(
-        "Summary",
-        summary_rows,
-        ["Metric", "Value", "UoM", "Description"],
-    )
-    add_table(
-        "Performance per instrument",
-        per_inst_rows,
-        per_inst_labels,
-    )
-    add_table(
-        "Performance per rule (aggregated variations)",
-        per_rule_rows,
-        per_rule_labels,
-    )
-    add_table(
-        "Performance per rule variation",
-        rule_variation_rows,
-        rule_variation_labels,
-    )
-    add_table(
-        "Correlazione tra strategie/rule",
-        rule_correlation_rows,
-        rule_correlation_labels,
-    )
+    add_table("Summary", summary_rows, ["Metric", "Value", "UoM", "Description"])
+    add_table("Performance per instrument", per_inst_rows, per_inst_labels)
+    add_table("Performance per rule (aggregated variations)", per_rule_rows, per_rule_labels)
+    add_table("Performance per rule variation", rule_variation_rows, rule_variation_labels)
+    add_table("Correlation between strategies/rules", rule_correlation_rows, rule_correlation_labels)
     add_table("Spread costs used", cost_rows, ["Instrument", "Source", "Spread"])
-    add_table(
-        "Notional positions (annual average)",
-        notional_rows,
-        ["Instrument", "Year", "Avg notional"],
-    )
-    add_table(
-        "Executed trades (from buffered positions)",
-        trades_rows,
-        [
-            "Date",
-            "Instrument",
-            "Trade",
-            "New pos",
-            "Pos (base)",
-            "Spread",
-            "Commission",
-            "Total cost",
-        ],
-    )
-    if trades_rows:
-        sections.append(
-            "Note: only the most recent trades are shown to keep the report concise."
-        )
-        sections.append("")
+    add_table("Notional positions (annual average)", notional_rows, ["Instrument", "Year", "Avg notional"])
+    add_table("Executed trades (from buffered positions)", trades_rows,
+              ["Date", "Instrument", "Trade", "New pos", "Pos (base)", "Spread", "Commission", "Total cost"])
 
     if not sections:
         return
-
     try:
-        output_path.write_text("\n".join(sections))
+        output_path.write_text("\n".join(sections), encoding="utf-8")
         print(f"Saved text summary: {output_path}")
     except Exception as err:
         print(f"Text summary write skipped ({err})")
 
 
+# =========================
+# CLI
+# =========================
+
 def parse_args(argv=None) -> BacktestConfig:
-    parser = argparse.ArgumentParser(
-        description="Run a futures backtest using DB data (Mongo + Parquet).",
-    )
-    parser.add_argument(
-        "--config",
-        dest="config_path",
-        default=None,
-        help="Config file path (required unless <script>_config.yaml sits next to the entrypoint).",
-    )
-    parser.add_argument(
-        "--results-dir",
-        default=None,
-        help="Output directory (default: backtest_results next to the config).",
-    )
-    parser.add_argument(
-        "--timestamp",
-        default=None,
-        help="Custom timestamp for output files (default: now).",
-    )
-    parser.add_argument(
-        "--fallback-spread",
-        type=float,
-        default=DEFAULT_FALLBACK_SPREAD,
-        help="Fallback spread if missing or zero in the DB.",
-    )
-    parser.add_argument(
-        "--use-db-capital",
-        action="store_true",
-        help="Pull capital and base currency from the DB (dataCapital/dataCurrency) instead of YAML; run update_total_capital then update_strategy_capital first.",
-    )
-    parser.add_argument(
-        "--capital-multiplier",
-        default=None,
-        help="Override capital compounding: fixed / full / half, or dotted function path (e.g. syscore.capital.full_compounding).",
-    )
-    parser.add_argument(
-        "--strategy-name",
-        default=None,
-        help="Strategy name for DB capital lookup (default: config filename stem).",
-    )
-    parser.add_argument(
-        "--instruments",
-        default=None,
-        help="Comma-separated list of instruments to include (default: all).",
-    )
-    parser.add_argument(
-        "--no-plots", action="store_true", help="Disable PNG generation."
-    )
-    parser.add_argument(
-        "--no-quantstats",
-        action="store_true",
-        help="Disable the QuantStats HTML report.",
-    )
-    parser.add_argument(
-        "--no-pdf", action="store_true", help="Disable the unified PDF."
-    )
-    parser.add_argument(
-        "--no-report",
-        dest="no_report",
-        action="store_true",
-        help="Disable the txt summary output.",
-    )
-    parser.add_argument(
-        "--no-debug",
-        dest="no_report",
-        action="store_true",
-        help="(Deprecated) Alias for --no-report.",
-    )
-    parser.add_argument(
-        "--no-debug-log",
-        action="store_true",
-        help="Disable the terminal output .log file.",
-    )
-    parser.add_argument(
-        "--keep-intermediate-figs",
-        action="store_true",
-        help="Keep PNG figures instead of deleting them after building the PDF.",
-    )
-    parser.add_argument(
-        "--cache",
-        action="store_true",
-        help="Load/save the system cache to speed up reruns (default path: backtest_results/<config>_system_cache.pckz).",
-    )
-    parser.add_argument(
-        "--cache-file",
-        default=None,
-        help="Custom path for the system cache pickle.",
-    )
-    parser.add_argument(
-        "--no-cache-compress",
-        action="store_true",
-        help="Disable backtest_compress before pickling (cache files will be larger).",
-    )
+    parser = argparse.ArgumentParser(description="Run a futures backtest using DB data (Mongo + Parquet).")
+
+    parser.add_argument("--config", dest="config_path", default=None,
+                        help="Config file path (required unless <script>_config.yaml sits next to the entrypoint).")
+
+    parser.add_argument("--results-dir", default=None,
+                        help="Output directory (default: backtest_results next to the config).")
+
+    parser.add_argument("--timestamp", default=None, help="Custom timestamp for output files (default: now).")
+
+    parser.add_argument("--fallback-spread", type=float, default=DEFAULT_FALLBACK_SPREAD,
+                        help="Fallback spread if missing or zero in the DB.")
+
+    parser.add_argument("--use-db-capital", action="store_true",
+                        help="Pull capital and base currency from DB instead of YAML.")
+
+    parser.add_argument("--capital-multiplier", default=None,
+                        help="Override capital compounding: fixed / full / half, or dotted function path.")
+
+    parser.add_argument("--strategy-name", default=None,
+                        help="Strategy name for DB capital lookup (default: config filename stem).")
+
+    parser.add_argument("--instruments", default=None,
+                        help="Comma-separated list of instruments to include (default: all).")
+
+    parser.add_argument("--no-plots", action="store_true", help="Disable PNG generation.")
+    parser.add_argument("--no-quantstats", action="store_true", help="Disable the QuantStats HTML report.")
+    parser.add_argument("--no-pdf", action="store_true", help="Disable the unified PDF.")
+    parser.add_argument("--no-report", dest="no_report", action="store_true", help="Disable the txt summary output.")
+
+    parser.add_argument("--no-debug-log", action="store_true", help="Disable the terminal output .log file.")
+    parser.add_argument("--keep-intermediate-figs", action="store_true", help="Keep PNG figures.")
+    parser.add_argument("--cache", action="store_true", help="Load/save the system cache to speed up reruns.")
+
+    parser.add_argument("--cache-file", default=None, help="Custom path for the system cache pickle.")
+    parser.add_argument("--no-cache-compress", action="store_true", help="Disable backtest_compress before pickling.")
 
     args = parser.parse_args(argv)
+
     instruments = None
     if args.instruments:
         instruments = [x.strip() for x in args.instruments.split(",") if x.strip()]
