@@ -14,7 +14,7 @@ from sysdata.data_blob import dataBlob
 from sysproduction.data.contracts import dataContracts
 from sysproduction.data.prices import diagPrices
 
-DEFAULT_DASHBOARD_FILENAME = "sampled_contracts_dashboard.pdf"
+DEFAULT_DASHBOARD_FILENAME = "sampled_contracts_quality_report.pdf"
 
 
 def _calculate_data_quality(adjusted_prices: pd.Series) -> Optional[dict]:
