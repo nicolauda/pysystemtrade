@@ -79,6 +79,7 @@ DEFAULT_FALLBACK_SPREAD = 1.0  # price units if spread missing
 # Path helpers
 # =========================
 
+
 def _infer_default_config_path() -> Optional[Path]:
     """If entrypoint is <name>_backtest.py, try <name>_config.yaml next to it."""
     try:
@@ -157,6 +158,7 @@ def _tee_output(log_path: Optional[Path]):
 # Config + result models
 # =========================
 
+
 @dataclass
 class BacktestConfig:
     config_path: Optional[Path] = None
@@ -181,6 +183,7 @@ class BacktestConfig:
     use_db_capital: bool = False
     strategy_name: Optional[str] = None
     capital_multiplier: Optional[str] = None
+    ic_only: bool = False
 
     def with_defaults(self) -> "BacktestConfig":
         inferred = _infer_default_config_path()
@@ -200,7 +203,9 @@ class BacktestConfig:
             else _resolve_dir_path(resolved_config.parent / "backtest_results")
         )
         resolved_timestamp = self.timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
-        resolved_instruments = tuple(self.instrument_filter) if self.instrument_filter else None
+        resolved_instruments = (
+            tuple(self.instrument_filter) if self.instrument_filter else None
+        )
 
         cache_ext = "pckz" if self.cache_compress else "pck"
         resolved_cache = (
@@ -228,6 +233,7 @@ class BacktestConfig:
             use_db_capital=bool(self.use_db_capital),
             strategy_name=self.strategy_name or resolved_config.stem,
             capital_multiplier=self.capital_multiplier,
+            ic_only=bool(self.ic_only),
         )
 
 
@@ -264,9 +270,11 @@ class BacktestResult:
 # Matplotlib plotting helpers
 # =========================
 
+
 def _set_matplotlib_font_defaults():
     try:
         import matplotlib
+
         matplotlib.rcParams["font.family"] = "DejaVu Sans"
         matplotlib.rcParams["font.sans-serif"] = ["DejaVu Sans", "sans-serif"]
         matplotlib.rcParams["font.serif"] = ["DejaVu Serif", "serif"]
@@ -308,6 +316,7 @@ def _plot_series(series: Any, path: Optional[Path], title: str = ""):
         return
     try:
         import matplotlib.pyplot as plt
+
         _set_matplotlib_font_defaults()
         s = _clean_series(series)
         if s.empty:
@@ -323,11 +332,14 @@ def _plot_series(series: Any, path: Optional[Path], title: str = ""):
         print(f"Plot skipped ({err})")
 
 
-def _plot_multiple_series(series_dict: dict, path: Optional[Path], title: str = "", ylabel: str = ""):
+def _plot_multiple_series(
+    series_dict: dict, path: Optional[Path], title: str = "", ylabel: str = ""
+):
     if path is None or not series_dict:
         return
     try:
         import matplotlib.pyplot as plt
+
         _set_matplotlib_font_defaults()
         plt.figure(figsize=(12, 6))
         plotted = 0
@@ -353,11 +365,14 @@ def _plot_multiple_series(series_dict: dict, path: Optional[Path], title: str = 
         print(f"Aggregated rule plot skipped ({err})")
 
 
-def _plot_notional_positions(system, path: Optional[Path], instruments: Optional[Sequence[str]], clip_bounds=None):
+def _plot_notional_positions(
+    system, path: Optional[Path], instruments: Optional[Sequence[str]], clip_bounds=None
+):
     if path is None:
         return
     try:
         import matplotlib.pyplot as plt
+
         _set_matplotlib_font_defaults()
         instrs = instruments or system.get_instrument_list()
         plt.figure(figsize=(12, 6))
@@ -370,7 +385,9 @@ def _plot_notional_positions(system, path: Optional[Path], instruments: Optional
         if clip_bounds:
             plt.axhline(clip_bounds[0], linestyle="--", linewidth=0.8, alpha=0.5)
             plt.axhline(clip_bounds[1], linestyle="--", linewidth=0.8, alpha=0.5)
-            plt.title(f"Notional positions (capped to [{clip_bounds[0]}, {clip_bounds[1]}])")
+            plt.title(
+                f"Notional positions (capped to [{clip_bounds[0]}, {clip_bounds[1]}])"
+            )
         else:
             plt.title("Notional positions (uncapped)")
         plt.ylabel("Notional position")
@@ -384,11 +401,14 @@ def _plot_notional_positions(system, path: Optional[Path], instruments: Optional
         print(f"Notional position plot skipped ({err})")
 
 
-def _plot_buffered_positions(system, path: Optional[Path], instruments: Optional[Sequence[str]], clip_bounds=None):
+def _plot_buffered_positions(
+    system, path: Optional[Path], instruments: Optional[Sequence[str]], clip_bounds=None
+):
     if path is None:
         return
     try:
         import matplotlib.pyplot as plt
+
         _set_matplotlib_font_defaults()
         instrs = instruments or system.get_instrument_list()
         plt.figure(figsize=(12, 6))
@@ -401,7 +421,9 @@ def _plot_buffered_positions(system, path: Optional[Path], instruments: Optional
         if clip_bounds:
             plt.axhline(clip_bounds[0], linestyle="--", linewidth=0.8, alpha=0.5)
             plt.axhline(clip_bounds[1], linestyle="--", linewidth=0.8, alpha=0.5)
-            plt.title(f"Buffered positions (capped to [{clip_bounds[0]}, {clip_bounds[1]}])")
+            plt.title(
+                f"Buffered positions (capped to [{clip_bounds[0]}, {clip_bounds[1]}])"
+            )
         else:
             plt.title("Buffered positions (executed, rounded contracts)")
         plt.ylabel("Contracts")
@@ -419,12 +441,14 @@ def _plot_buffered_positions(system, path: Optional[Path], instruments: Optional
 # Quantstats
 # =========================
 
+
 def _quantstats_report(returns: Any, output_path: Optional[Path]):
     if output_path is None:
         return
     try:
         _set_matplotlib_font_defaults()
         import quantstats as qs
+
         qs.extend_pandas()
 
         returns = _clean_series(pd.Series(returns))
@@ -462,6 +486,7 @@ def _quantstats_report(returns: Any, output_path: Optional[Path]):
 # Core calculations + formatting
 # =========================
 
+
 def _compute_return_stats(returns_pct: pd.Series, periods_per_year: int = 252) -> dict:
     if returns_pct is None:
         return {}
@@ -487,6 +512,7 @@ def _compute_return_stats(returns_pct: pd.Series, periods_per_year: int = 252) -
             t_stat = mean_return / (sample_std / math.sqrt(n))
             try:
                 from scipy import stats
+
                 p_value = float(stats.t.sf(abs(t_stat), df=n - 1) * 2.0)
             except Exception:
                 p_value = float(math.erfc(abs(t_stat) / math.sqrt(2)))
@@ -547,8 +573,10 @@ def _print_perf_table(
     verbose: bool = True,
     include_significance: bool = False,
     include_pnl: bool = False,
+    include_ic: bool = False,
     base_currency: str = "",
 ):
+    """Render a performance table while optionally including IC and significance columns."""
     if not rows:
         if verbose:
             print(f"{title}: (no data)")
@@ -557,7 +585,10 @@ def _print_perf_table(
     col_names = ["Name"]
     if include_pnl:
         col_names.append("P&L")
-    col_names += ["Total", "CAGR", "Vol", "Sharpe", "MaxDD"]
+    col_names += ["Total", "CAGR", "Vol", "Sharpe"]
+    if include_ic:
+        col_names.append("IC")
+    col_names.append("MaxDD")
     if include_significance:
         col_names += ["t-stat", "p-value"]
 
@@ -575,10 +606,16 @@ def _print_perf_table(
                 _format_pct(stats.get("total_return", np.nan)),
                 _format_pct(stats.get("ann_return", np.nan)),
                 _format_pct(stats.get("vol", np.nan)),
-                f"{stats.get('sharpe', np.nan):.2f}" if not np.isnan(stats.get("sharpe", np.nan)) else "-",
-                _format_pct(stats.get("max_dd", np.nan)),
+                f"{stats.get('sharpe', np.nan):.2f}"
+                if not np.isnan(stats.get("sharpe", np.nan))
+                else "-",
             ]
         )
+        if include_ic:
+            row.append(
+                _format_number(stats.get("info_coefficient", np.nan), decimals=3)
+            )
+        row.append(_format_pct(stats.get("max_dd", np.nan)))
         if include_significance:
             row.append(_format_number(stats.get("t_stat", np.nan)))
             row.append(_format_p_value(stats.get("p_value", np.nan)))
@@ -588,7 +625,9 @@ def _print_perf_table(
     return printable, col_names
 
 
-def _print_per_instrument_perf(portfolio, instrument_filter: Optional[Sequence[str]] = None, verbose: bool = True):
+def _print_per_instrument_perf(
+    portfolio, instrument_filter: Optional[Sequence[str]] = None, verbose: bool = True
+):
     try:
         instrument_group = portfolio.percent
         rows = []
@@ -605,7 +644,101 @@ def _print_per_instrument_perf(portfolio, instrument_filter: Optional[Sequence[s
         return [], []
 
 
-def _print_per_strategy_perf(system, portfolio, base_currency: str = "", verbose: bool = True):
+def _extract_forecast_series(forecast: Any) -> Optional[pd.Series]:
+    """Extract a single numeric pandas Series from various forecast representations."""
+    if forecast is None:
+        return None
+    if isinstance(forecast, pd.DataFrame):
+        if forecast.shape[1] == 0:
+            return None
+        series = forecast.iloc[:, 0]
+    elif isinstance(forecast, pd.Series):
+        series = forecast
+    else:
+        try:
+            series = pd.Series(forecast).squeeze()
+        except Exception:
+            return None
+    series = pd.to_numeric(series, errors="coerce")
+    series = series.dropna()
+    return series if not series.empty else None
+
+
+def _sum_series_list(series_list: list[pd.Series]) -> Optional[pd.Series]:
+    """Sum a list of Series along their shared index, returning None if empty."""
+    if not series_list:
+        return None
+    if len(series_list) == 1:
+        return series_list[0].astype(float)
+    combined = pd.concat(series_list, axis=1)
+    combined = combined.fillna(0.0)
+    summed = combined.sum(axis=1)
+    return summed.astype(float)
+
+
+def _build_instrument_rule_map(
+    system, instrument_list: Sequence[str]
+) -> dict[str, set[str]]:
+    """Map each instrument to the trading rules that reference it."""
+    mapping: dict[str, set[str]] = {}
+    for inst in instrument_list:
+        try:
+            rules = system.accounts.list_of_rules_for_code(inst)
+        except Exception:
+            rules = []
+        mapping[inst] = set(rules or [])
+    return mapping
+
+
+def _aggregate_forecast_for_rule(
+    system,
+    rule: str,
+    instrument_list: Sequence[str],
+    instrument_rule_map: dict[str, set[str]],
+) -> Optional[pd.Series]:
+    """Aggregate the capped forecast series across all instruments supporting a rule."""
+    series_list: list[pd.Series] = []
+    for inst in instrument_list:
+        if rule not in instrument_rule_map.get(inst, set()):
+            continue
+        try:
+            forecast = system.accounts.get_capped_forecast(inst, rule)
+        except Exception:
+            continue
+        series = _extract_forecast_series(forecast)
+        if series is None or series.empty:
+            continue
+        series_list.append(series)
+    return _sum_series_list(series_list)
+
+
+def _compute_info_coefficient(
+    forecast_series: Optional[pd.Series], returns_series: Optional[pd.Series]
+) -> float:
+    """Compute the Pearson correlation between aligned forecast and return series."""
+    if (
+        forecast_series is None
+        or forecast_series.empty
+        or returns_series is None
+        or returns_series.empty
+    ):
+        return float("nan")
+    aligned_forecast = forecast_series.reindex(returns_series.index)
+    aligned_forecast = pd.to_numeric(aligned_forecast, errors="coerce")
+    aligned_returns = pd.to_numeric(returns_series, errors="coerce")
+    mask = (~aligned_forecast.isna()) & (~aligned_returns.isna())
+    if mask.sum() < 2:
+        return float("nan")
+    try:
+        return float(aligned_forecast[mask].corr(aligned_returns[mask]))
+    except Exception:
+        return float("nan")
+
+
+def _print_per_strategy_perf(
+    system, portfolio, base_currency: str = "", verbose: bool = True
+):
+    """Gather per-rule variation stats plus information coefficient data."""
     try:
         rules_group = system.accounts.pandl_for_all_trading_rules().value_terms
         capital = pd.Series(portfolio.capital).astype(float)
@@ -613,6 +746,13 @@ def _print_per_strategy_perf(system, portfolio, base_currency: str = "", verbose
         rows = []
         returns_df = {}
         pnl_by_rule = {}
+        forecast_by_rule: dict[str, Optional[pd.Series]] = {}
+
+        try:
+            instrument_list = system.get_instrument_list()
+        except Exception:
+            instrument_list = []
+        instrument_rule_map = _build_instrument_rule_map(system, instrument_list)
 
         for rule in rules_group.asset_columns:
             rule_curve = rules_group[rule]
@@ -620,10 +760,19 @@ def _print_per_strategy_perf(system, portfolio, base_currency: str = "", verbose
             pnl_by_rule[rule] = pnl
             cap = capital.reindex(pnl.index).ffill()
             returns_pct = (pnl / cap) * 100.0
+
+            forecast_series = _aggregate_forecast_for_rule(
+                system, rule, instrument_list, instrument_rule_map
+            )
+            ic = _compute_info_coefficient(forecast_series, returns_pct)
+
             stats = _compute_return_stats(returns_pct)
             stats["pnl"] = pnl.sum()
+            stats["info_coefficient"] = ic
+
             returns_df[rule] = returns_pct
             rows.append((rule, stats))
+            forecast_by_rule[rule] = forecast_series
 
         table_rows, headers = _print_perf_table(
             "Performance per rule variation (net % returns, scaled to portfolio capital):",
@@ -631,14 +780,15 @@ def _print_per_strategy_perf(system, portfolio, base_currency: str = "", verbose
             verbose=verbose,
             include_significance=True,
             include_pnl=True,
+            include_ic=True,
             base_currency=base_currency,
         )
         returns_df = pd.DataFrame(returns_df)
-        return table_rows, headers, returns_df, pnl_by_rule, capital
+        return table_rows, headers, returns_df, pnl_by_rule, capital, forecast_by_rule
     except Exception as err:
         if verbose:
             print(f"Per-strategy stats skipped ({err})")
-        return [], [], pd.DataFrame(), {}, pd.Series(dtype=float)
+        return [], [], pd.DataFrame(), {}, pd.Series(dtype=float), {}
 
 
 def _group_rules_by_function(system) -> dict[str, list]:
@@ -666,7 +816,15 @@ def _group_rules_by_function(system) -> dict[str, list]:
     return {k: sorted(v) for k, v in sorted(groups.items())}
 
 
-def _build_rule_group_perf(system, pnl_by_rule: dict, capital_series: pd.Series, base_currency: str = "", verbose: bool = True):
+def _build_rule_group_perf(
+    system,
+    pnl_by_rule: dict,
+    capital_series: pd.Series,
+    forecast_by_rule: Optional[dict[str, Optional[pd.Series]]] = None,
+    base_currency: str = "",
+    verbose: bool = True,
+):
+    """Group rule variations by function and compute aggregated performance plus IC."""
     groups = _group_rules_by_function(system)
     if not groups:
         groups = {rule_name: [rule_name] for rule_name in pnl_by_rule.keys()}
@@ -690,6 +848,17 @@ def _build_rule_group_perf(system, pnl_by_rule: dict, capital_series: pd.Series,
         returns_pct = (group_pnl / cap) * 100.0
         stats = _compute_return_stats(returns_pct)
         stats["pnl"] = group_pnl.sum()
+        forecast_map = forecast_by_rule or {}
+        group_forecasts = []
+        for rule in rule_names:
+            series = forecast_map.get(rule)
+            if series is None or series.empty:
+                continue
+            group_forecasts.append(series)
+        group_forecast_series = _sum_series_list(group_forecasts)
+        stats["info_coefficient"] = _compute_info_coefficient(
+            group_forecast_series, returns_pct
+        )
         rows.append((group_name, stats))
 
     table_rows, headers = _print_perf_table(
@@ -698,6 +867,7 @@ def _build_rule_group_perf(system, pnl_by_rule: dict, capital_series: pd.Series,
         verbose=verbose,
         include_significance=True,
         include_pnl=True,
+        include_ic=True,
         base_currency=base_currency,
     )
     return table_rows, headers, group_curves
@@ -713,17 +883,34 @@ def _build_correlation_table(returns_df: pd.DataFrame):
     headers = ["Strategy"] + list(corr.columns)
     rows = []
     for idx, row in corr.iterrows():
-        formatted = ["-" if pd.isna(val) else _format_number(val, decimals=3) for val in row.values]
+        formatted = [
+            "-" if pd.isna(val) else _format_number(val, decimals=3)
+            for val in row.values
+        ]
         rows.append([idx] + formatted)
     return rows, headers
 
 
-def _collect_rule_performance_tables(system, portfolio, base_currency: str = "", verbose: bool = True):
-    var_rows, var_headers, returns_df, pnl_by_rule, capital_series = _print_per_strategy_perf(
+def _collect_rule_performance_tables(
+    system, portfolio, base_currency: str = "", verbose: bool = True
+):
+    (
+        var_rows,
+        var_headers,
+        returns_df,
+        pnl_by_rule,
+        capital_series,
+        forecast_by_rule,
+    ) = _print_per_strategy_perf(
         system, portfolio, base_currency=base_currency, verbose=verbose
     )
     group_rows, group_headers, group_curves = _build_rule_group_perf(
-        system, pnl_by_rule, capital_series, base_currency=base_currency, verbose=verbose
+        system,
+        pnl_by_rule,
+        capital_series,
+        forecast_by_rule,
+        base_currency=base_currency,
+        verbose=verbose,
     )
     corr_rows, corr_headers = _build_correlation_table(returns_df)
     return dict(
@@ -737,7 +924,9 @@ def _collect_rule_performance_tables(system, portfolio, base_currency: str = "",
     )
 
 
-def _collect_notional_positions_by_year(system, instrument_filter: Optional[Sequence[str]] = None) -> list:
+def _collect_notional_positions_by_year(
+    system, instrument_filter: Optional[Sequence[str]] = None
+) -> list:
     rows = []
     try:
         instruments = instrument_filter or system.get_instrument_list()
@@ -760,7 +949,12 @@ def _collect_notional_positions_by_year(system, instrument_filter: Optional[Sequ
     return rows
 
 
-def _collect_trades(system, instrument_filter: Optional[Sequence[str]] = None, max_rows: int = 200, base_currency: str = "") -> list:
+def _collect_trades(
+    system,
+    instrument_filter: Optional[Sequence[str]] = None,
+    max_rows: int = 200,
+    base_currency: str = "",
+) -> list:
     rows = []
     try:
         instruments = instrument_filter or system.get_instrument_list()
@@ -830,7 +1024,9 @@ def _collect_trades(system, instrument_filter: Optional[Sequence[str]] = None, m
     return rows
 
 
-def _build_spread_cost_rows(used_costs: dict, missing: list, instruments: Optional[Sequence[str]] = None) -> list:
+def _build_spread_cost_rows(
+    used_costs: dict, missing: list, instruments: Optional[Sequence[str]] = None
+) -> list:
     rows = []
     missing_set = set(missing)
     ordered = list(instruments) if instruments is not None else list(used_costs.keys())
@@ -872,10 +1068,29 @@ def _metric_descriptions() -> dict:
 
 def _metric_uom(metric: str, base_currency: str) -> str:
     currency_metrics = {
-        "min", "max", "median", "mean", "std", "ann_mean", "ann_std",
-        "avg_drawdown", "avg_return_to_drawdown", "avg_loss", "avg_gain", "max_drawdown",
+        "min",
+        "max",
+        "median",
+        "mean",
+        "std",
+        "ann_mean",
+        "ann_std",
+        "avg_drawdown",
+        "avg_return_to_drawdown",
+        "avg_loss",
+        "avg_gain",
+        "max_drawdown",
     }
-    ratio_metrics = {"sharpe", "Sharpe", "sortino", "calmar", "gaintolossratio", "profitfactor", "t_stat", "skew"}
+    ratio_metrics = {
+        "sharpe",
+        "Sharpe",
+        "sortino",
+        "calmar",
+        "gaintolossratio",
+        "profitfactor",
+        "t_stat",
+        "skew",
+    }
     fraction_metrics = {"time_in_drawdown", "hitrate", "p_value"}
     if metric in currency_metrics:
         return base_currency or ""
@@ -897,7 +1112,12 @@ def _format_decimal(value: Any) -> str:
 
 
 def _format_summary_row(metric, value, descriptions: dict, base_currency: str) -> list:
-    return [str(metric), _format_decimal(value), _metric_uom(str(metric), base_currency), descriptions.get(str(metric), "")]
+    return [
+        str(metric),
+        _format_decimal(value),
+        _metric_uom(str(metric), base_currency),
+        descriptions.get(str(metric), ""),
+    ]
 
 
 def _build_summary_rows(stats: Any, portfolio, base_currency: str = "") -> list:
@@ -908,26 +1128,41 @@ def _build_summary_rows(stats: Any, portfolio, base_currency: str = "") -> list:
         first = stats[0]
         if isinstance(first, (list, tuple)):
             try:
-                rows.extend([_format_summary_row(k, v, descriptions, base_currency) for k, v in first])
+                rows.extend(
+                    [
+                        _format_summary_row(k, v, descriptions, base_currency)
+                        for k, v in first
+                    ]
+                )
             except Exception:
                 pass
 
     if not rows and hasattr(stats, "items"):
         try:
-            rows = [_format_summary_row(k, v, descriptions, base_currency) for k, v in stats.items()]
+            rows = [
+                _format_summary_row(k, v, descriptions, base_currency)
+                for k, v in stats.items()
+            ]
         except Exception:
             rows = []
 
     if not rows:
         try:
-            rows = [_format_summary_row(k, v, descriptions, base_currency) for k, v in dict(stats).items()]
+            rows = [
+                _format_summary_row(k, v, descriptions, base_currency)
+                for k, v in dict(stats).items()
+            ]
         except Exception:
             rows = []
 
     existing = {str(r[0]).lower() for r in rows}
     if "sharpe" not in existing:
         try:
-            rows.append(_format_summary_row("Sharpe", portfolio.sharpe(), descriptions, base_currency))
+            rows.append(
+                _format_summary_row(
+                    "Sharpe", portfolio.sharpe(), descriptions, base_currency
+                )
+            )
         except Exception:
             pass
     return rows
@@ -967,6 +1202,7 @@ def _safe_tail_print(obj: Any, n: int = 5, indent: str = ""):
 # Spread cost patching
 # =========================
 
+
 def _ensure_spread_costs(data, instruments, fallback_default: float):
     scd = data.db_spread_cost_data
     original_get = scd.get_spread_cost
@@ -999,6 +1235,7 @@ def _ensure_spread_costs(data, instruments, fallback_default: float):
 # =========================
 # Report object + Policies (ReportLab)
 # =========================
+
 
 @dataclass
 class TablePolicy:
@@ -1056,12 +1293,16 @@ def _wrap_paragraph(text: Any, style: ParagraphStyle) -> Paragraph:
     return Paragraph(s, style)
 
 
-def _estimate_first_col_fraction(headers: list, rows: list, min_frac: float, max_frac: float) -> float:
+def _estimate_first_col_fraction(
+    headers: list, rows: list, min_frac: float, max_frac: float
+) -> float:
     try:
         first_len = max([len(str(headers[0]))] + [len(str(r[0])) for r in rows if r])
         other_lens = []
         for j in range(1, len(headers)):
-            col_len = max([len(str(headers[j]))] + [len(str(r[j])) for r in rows if len(r) > j])
+            col_len = max(
+                [len(str(headers[j]))] + [len(str(r[j])) for r in rows if len(r) > j]
+            )
             other_lens.append(col_len)
         if not other_lens:
             return min(max_frac, max(min_frac, 0.40))
@@ -1074,7 +1315,9 @@ def _estimate_first_col_fraction(headers: list, rows: list, min_frac: float, max
         return min(max_frac, max(min_frac, 0.35))
 
 
-def _build_col_widths_points(page_width_pts: float, margin_pts: float, ncols: int, first_frac: float) -> list:
+def _build_col_widths_points(
+    page_width_pts: float, margin_pts: float, ncols: int, first_frac: float
+) -> list:
     usable = max(100, page_width_pts - 2 * margin_pts)
     if ncols <= 1:
         return [usable]
@@ -1111,27 +1354,33 @@ def _split_wide_table(headers: list, rows: list, max_data_cols: int) -> list[dic
         end = start + max_data_cols
         h = [fixed_header] + data_headers[start:end]
         r = [[row[0]] + row[1 + start : 1 + end] for row in rows]
-        out.append({"headers": h, "rows": r, "page": idx + 1, "total_pages": total_chunks})
+        out.append(
+            {"headers": h, "rows": r, "page": idx + 1, "total_pages": total_chunks}
+        )
     return out
 
 
 def _default_table_style(font_name: str, font_size: int) -> TableStyle:
-    return TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), font_name),
-        ("FONTSIZE", (0, 0), (-1, -1), font_size),
-        ("LEADING", (0, 0), (-1, -1), font_size + 2),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-    ])
+    return TableStyle(
+        [
+            ("FONTNAME", (0, 0), (-1, -1), font_name),
+            ("FONTSIZE", (0, 0), (-1, -1), font_size),
+            ("LEADING", (0, 0), (-1, -1), font_size + 2),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]
+    )
 
 
-def _apply_alignment(ts: TableStyle, align_cols: dict[int, str] | None, nrows: int, ncols: int):
+def _apply_alignment(
+    ts: TableStyle, align_cols: dict[int, str] | None, nrows: int, ncols: int
+):
     if not align_cols:
         return
     for col, align in align_cols.items():
@@ -1168,14 +1417,19 @@ def _make_table_flowable(
     )
 
     import textwrap
+
     wrap_cols = policy.wrap_cols or {}
     align_cols = policy.align_cols or {}
 
     first_frac = first_col_frac
     if first_frac is None:
-        first_frac = _estimate_first_col_fraction(headers, rows, policy.first_col_min_frac, policy.first_col_max_frac)
+        first_frac = _estimate_first_col_fraction(
+            headers, rows, policy.first_col_min_frac, policy.first_col_max_frac
+        )
 
-    col_widths = _build_col_widths_points(page_width_pts, margin_pts, len(headers), first_frac)
+    col_widths = _build_col_widths_points(
+        page_width_pts, margin_pts, len(headers), first_frac
+    )
 
     def _effective_wrap_chars(col_idx: int, base_chars: int) -> int:
         if col_idx >= len(col_widths):
@@ -1208,7 +1462,9 @@ def _make_table_flowable(
     # header row
     data = [[cell_to_para(j, h) for j, h in enumerate(headers)]]
     for r in rows:
-        data.append([cell_to_para(j, r[j] if j < len(r) else "") for j in range(len(headers))])
+        data.append(
+            [cell_to_para(j, r[j] if j < len(r) else "") for j in range(len(headers))]
+        )
 
     ncols = len(headers)
     nrows = len(data)
@@ -1243,11 +1499,23 @@ def _render_reportlab_pdf(output_path: Path, report: ReportDocument):
         bottomMargin=margin,
     )
 
-    frame_p = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="portrait_frame")
-    frame_l = Frame(margin, margin, page_landscape[0] - 2 * margin, page_landscape[1] - 2 * margin, id="landscape_frame")
+    frame_p = Frame(
+        doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="portrait_frame"
+    )
+    frame_l = Frame(
+        margin,
+        margin,
+        page_landscape[0] - 2 * margin,
+        page_landscape[1] - 2 * margin,
+        id="landscape_frame",
+    )
 
-    tpl_p = PageTemplate(id="PORTRAIT", frames=[frame_p], onPage=footer, pagesize=page_portrait)
-    tpl_l = PageTemplate(id="LANDSCAPE", frames=[frame_l], onPage=footer, pagesize=page_landscape)
+    tpl_p = PageTemplate(
+        id="PORTRAIT", frames=[frame_p], onPage=footer, pagesize=page_portrait
+    )
+    tpl_l = PageTemplate(
+        id="LANDSCAPE", frames=[frame_l], onPage=footer, pagesize=page_landscape
+    )
     doc.addPageTemplates([tpl_p, tpl_l])
 
     styles = getSampleStyleSheet()
@@ -1308,7 +1576,10 @@ def _render_reportlab_pdf(output_path: Path, report: ReportDocument):
                 chunks = payload.get("chunks")
                 if chunks is None:
                     first_frac = _estimate_first_col_fraction(
-                        headers, rows, policy.first_col_min_frac, policy.first_col_max_frac
+                        headers,
+                        rows,
+                        policy.first_col_min_frac,
+                        policy.first_col_max_frac,
                     )
                     pagesize = page_landscape if use_landscape else page_portrait
                     page_width_pts = pagesize[0]
@@ -1316,12 +1587,25 @@ def _render_reportlab_pdf(output_path: Path, report: ReportDocument):
                     width_based_cols = _estimate_max_data_cols_from_width(
                         page_width_pts, margin, first_frac, min_data_col_width_pts=46.0
                     )
-                    effective_max_data_cols = max(policy.max_data_cols, width_based_cols)
+                    effective_max_data_cols = max(
+                        policy.max_data_cols, width_based_cols
+                    )
 
-                    if payload.get("split_wide", False) and ncols > (effective_max_data_cols + 1):
-                        chunks = _split_wide_table(headers, rows, effective_max_data_cols)
+                    if payload.get("split_wide", False) and ncols > (
+                        effective_max_data_cols + 1
+                    ):
+                        chunks = _split_wide_table(
+                            headers, rows, effective_max_data_cols
+                        )
                     else:
-                        chunks = [{"headers": headers, "rows": rows, "page": 1, "total_pages": 1}]
+                        chunks = [
+                            {
+                                "headers": headers,
+                                "rows": rows,
+                                "page": 1,
+                                "total_pages": 1,
+                            }
+                        ]
 
                 pagesize = page_landscape if use_landscape else page_portrait
                 page_width_pts = pagesize[0]
@@ -1329,11 +1613,16 @@ def _render_reportlab_pdf(output_path: Path, report: ReportDocument):
                 for ch in chunks:
                     ch_title = tb_title
                     if ch.get("total_pages", 1) > 1:
-                        ch_title = f"{tb_title} (block {ch['page']}/{ch['total_pages']})"
+                        ch_title = (
+                            f"{tb_title} (block {ch['page']}/{ch['total_pages']})"
+                        )
                     ch_headers = ch["headers"]
                     ch_rows = ch["rows"]
                     ch_first_frac = _estimate_first_col_fraction(
-                        ch_headers, ch_rows, policy.first_col_min_frac, policy.first_col_max_frac
+                        ch_headers,
+                        ch_rows,
+                        policy.first_col_min_frac,
+                        policy.first_col_max_frac,
                     )
                     story.extend(
                         _make_table_flowable(
@@ -1361,7 +1650,11 @@ def _render_reportlab_pdf(output_path: Path, report: ReportDocument):
                 max_w = pagesize[0] - 2 * margin
                 max_h = pagesize[1] - 2 * margin - 1.0 * cm
 
-                story.append(RLImage(str(img_path), width=max_w, height=max_h, kind="proportional"))
+                story.append(
+                    RLImage(
+                        str(img_path), width=max_w, height=max_h, kind="proportional"
+                    )
+                )
                 story.append(Spacer(1, 12))
                 continue
 
@@ -1388,9 +1681,23 @@ def _build_report_document(
     rule_correlation_rows: Optional[list] = None,
     rule_correlation_headers: Optional[list] = None,
 ) -> ReportDocument:
-
-    per_inst_labels = per_inst_headers or ["Name", "Total", "CAGR", "Vol", "Sharpe", "MaxDD"]
-    per_rule_labels = per_rule_headers or ["Name", "Total", "CAGR", "Vol", "Sharpe", "MaxDD"]
+    per_inst_labels = per_inst_headers or [
+        "Name",
+        "Total",
+        "CAGR",
+        "Vol",
+        "Sharpe",
+        "MaxDD",
+    ]
+    per_rule_labels = per_rule_headers or [
+        "Name",
+        "Total",
+        "CAGR",
+        "Vol",
+        "Sharpe",
+        "IC",
+        "MaxDD",
+    ]
     rule_variation_rows = rule_variation_rows or []
     rule_variation_labels = rule_variation_headers or per_rule_labels
     rule_correlation_rows = rule_correlation_rows or []
@@ -1414,7 +1721,12 @@ def _build_report_document(
                             rows=summary_rows,
                             policy=TablePolicy(
                                 wrap_cols={0: 24, 3: 52},
-                                align_cols={0: "LEFT", 1: "RIGHT", 2: "CENTER", 3: "LEFT"},
+                                align_cols={
+                                    0: "LEFT",
+                                    1: "RIGHT",
+                                    2: "CENTER",
+                                    3: "LEFT",
+                                },
                                 font_size=8,
                                 landscape_if_cols_gte=99,
                                 first_col_min_frac=0.26,
@@ -1560,7 +1872,16 @@ def _build_report_document(
         )
 
     if trades_rows:
-        headers = ["Date", "Instrument", "Trade", "New pos", "Pos (base)", "Spread", "Commission", "Total cost"]
+        headers = [
+            "Date",
+            "Instrument",
+            "Trade",
+            "New pos",
+            "Pos (base)",
+            "Spread",
+            "Commission",
+            "Total cost",
+        ]
         sections.append(
             ReportSection(
                 title="Trades",
@@ -1573,7 +1894,16 @@ def _build_report_document(
                             rows=trades_rows,
                             policy=TablePolicy(
                                 wrap_cols={1: 14, 4: 18},
-                                align_cols={0: "LEFT", 1: "LEFT", 2: "RIGHT", 3: "RIGHT", 4: "RIGHT", 5: "RIGHT", 6: "RIGHT", 7: "RIGHT"},
+                                align_cols={
+                                    0: "LEFT",
+                                    1: "LEFT",
+                                    2: "RIGHT",
+                                    3: "RIGHT",
+                                    4: "RIGHT",
+                                    5: "RIGHT",
+                                    6: "RIGHT",
+                                    7: "RIGHT",
+                                },
                                 font_size=7,
                                 landscape_if_cols_gte=7,
                                 first_col_min_frac=0.14,
@@ -1600,7 +1930,13 @@ def _build_report_document(
                             split_wide=True,
                             policy=TablePolicy(
                                 wrap_cols={0: 24},
-                                align_cols={0: "LEFT", **{i: "RIGHT" for i in range(1, len(rule_correlation_labels))}},
+                                align_cols={
+                                    0: "LEFT",
+                                    **{
+                                        i: "RIGHT"
+                                        for i in range(1, len(rule_correlation_labels))
+                                    },
+                                },
                                 font_size=7,
                                 max_data_cols=12,
                                 landscape_if_cols_gte=4,
@@ -1618,7 +1954,12 @@ def _build_report_document(
     for p in figure_paths or []:
         pp = Path(p)
         if pp.exists():
-            fig_blocks.append(ReportBlock(kind="image", payload={"path": str(pp), "caption": pp.name, "landscape": True}))
+            fig_blocks.append(
+                ReportBlock(
+                    kind="image",
+                    payload={"path": str(pp), "caption": pp.name, "landscape": True},
+                )
+            )
     if fig_blocks:
         sections.append(ReportSection(title="Figures", blocks=fig_blocks))
 
@@ -1662,6 +2003,7 @@ def _build_unified_pdf(
 # =========================
 # Cache helpers
 # =========================
+
 
 def _alternate_cache_path(path: Path) -> Optional[Path]:
     suffix = path.suffix.lower()
@@ -1711,7 +2053,10 @@ def _resolve_capital_multiplier(arg: str) -> str:
 # Runner
 # =========================
 
-def _filter_instruments(instruments: Iterable[str], desired: Optional[Sequence[str]]) -> list:
+
+def _filter_instruments(
+    instruments: Iterable[str], desired: Optional[Sequence[str]]
+) -> list:
     full_list = list(instruments or [])
     if not desired:
         return full_list
@@ -1723,13 +2068,31 @@ def _filter_instruments(instruments: Iterable[str], desired: Optional[Sequence[s
     return filtered
 
 
-def run_backtest(backtest_config: BacktestConfig, data_factory=dbFuturesSimData, system_factory=futures_system) -> BacktestResult:
+def run_backtest(
+    backtest_config: BacktestConfig,
+    data_factory=dbFuturesSimData,
+    system_factory=futures_system,
+) -> BacktestResult:
+    """Drive the DB backtest or IC-only flow and build the requested reports."""
     cfg = backtest_config.with_defaults()
     logger = logging.getLogger(__name__)
     results_dir = cfg.results_dir
     timestamp = cfg.timestamp
 
-    log_path = (results_dir / f"backtest_output_{timestamp}.log") if cfg.include_debug_log else None
+    if cfg.ic_only:
+        cfg.include_plots = False
+        cfg.include_quantstats = False
+        if not cfg.use_cache:
+            msg = "IC-only run requested; enabling cache loading to reuse a previous execution."
+            print(msg)
+            logger.info(msg)
+            cfg.use_cache = True
+
+    log_path = (
+        (results_dir / f"backtest_output_{timestamp}.log")
+        if cfg.include_debug_log
+        else None
+    )
 
     with _tee_output(log_path):
         results_dir.mkdir(parents=True, exist_ok=True)
@@ -1740,12 +2103,18 @@ def run_backtest(backtest_config: BacktestConfig, data_factory=dbFuturesSimData,
 
         if cfg.use_db_capital:
             strategy_name = cfg.strategy_name or cfg.config_path.stem
-            capital_data_source = data if hasattr(data, "add_class_object") else dataBlob()
+            capital_data_source = (
+                data if hasattr(data, "add_class_object") else dataBlob()
+            )
             try:
                 capital_data = dataCapital(capital_data_source)
-                notional_trading_capital = capital_data.get_current_capital_for_strategy(strategy_name)
+                notional_trading_capital = (
+                    capital_data.get_current_capital_for_strategy(strategy_name)
+                )
             except missingData as err:
-                raise Exception(f"Capital data is missing for strategy '{strategy_name}': can't run backtest") from err
+                raise Exception(
+                    f"Capital data is missing for strategy '{strategy_name}': can't run backtest"
+                ) from err
             base_currency = dataCurrency(capital_data_source).get_base_currency()
             config_obj.notional_trading_capital = notional_trading_capital
             config_obj.base_currency = base_currency
@@ -1763,15 +2132,23 @@ def run_backtest(backtest_config: BacktestConfig, data_factory=dbFuturesSimData,
         weights_instruments = list(weights_dict.keys())
         all_instruments = list(data.get_instrument_list())
 
-        base_universe = config_instruments if config_instruments else (weights_instruments or all_instruments)
+        base_universe = (
+            config_instruments
+            if config_instruments
+            else (weights_instruments or all_instruments)
+        )
         instrument_list = _filter_instruments(base_universe, cfg.instrument_filter)
         if cfg.instrument_filter and not instrument_list:
             print("Instrument filter empty: using base instrument universe.")
             instrument_list = base_universe
 
-        spread_costs_used, spread_costs_missing = _ensure_spread_costs(
-            data, instrument_list, fallback_default=cfg.fallback_spread
-        )
+        if cfg.ic_only:
+            spread_costs_used = {}
+            spread_costs_missing = []
+        else:
+            spread_costs_used, spread_costs_missing = _ensure_spread_costs(
+                data, instrument_list, fallback_default=cfg.fallback_spread
+            )
 
         system = system_factory(data=data, config=config_obj)
 
@@ -1779,14 +2156,18 @@ def run_backtest(backtest_config: BacktestConfig, data_factory=dbFuturesSimData,
         cache_items_loaded = 0
         cache_path = cfg.cache_file if cfg.use_cache else None
         if cfg.use_cache and cache_path is not None:
-            effective_path = cache_path if cache_path.exists() else _alternate_cache_path(cache_path)
+            effective_path = (
+                cache_path if cache_path.exists() else _alternate_cache_path(cache_path)
+            )
             if effective_path is None:
                 msg = f"No cache found at {cache_path}; building results from scratch."
                 print(msg)
                 logger.info(msg)
             else:
                 try:
-                    system.config.backtest_compress = _infer_cache_compress(effective_path, cfg.cache_compress)
+                    system.config.backtest_compress = _infer_cache_compress(
+                        effective_path, cfg.cache_compress
+                    )
                 except Exception:
                     pass
                 try:
@@ -1813,31 +2194,44 @@ def run_backtest(backtest_config: BacktestConfig, data_factory=dbFuturesSimData,
         portfolio = system.accounts.portfolio()
         instruments_for_output = instrument_list or system.get_instrument_list()
 
-        print(f"Instruments: {', '.join(instruments_for_output)}")
-        print("\nLatest portfolio stats:")
-        stats = portfolio.stats()
-        _print_stats(stats)
+        if cfg.ic_only:
+            print(f"Instruments: {', '.join(instruments_for_output)}")
+            print("\nIC-only run; collecting information coefficient metrics.")
+            stats = None
+            curve = drawdown = rolling_std = None
+            base_currency = getattr(config_obj, "base_currency", "") or ""
+            per_inst_rows = []
+            per_inst_headers = None
+        else:
+            print(f"Instruments: {', '.join(instruments_for_output)}")
+            print("\nLatest portfolio stats:")
+            stats = portfolio.stats()
+            _print_stats(stats)
 
-        print(f"\nSharpe: {portfolio.sharpe():.2f}")
-        print("\nEquity curve (last 5):")
-        curve = portfolio.curve()
-        _safe_tail_print(curve, 5)
+            print(f"\nSharpe: {portfolio.sharpe():.2f}")
+            print("\nEquity curve (last 5):")
+            curve = portfolio.curve()
+            _safe_tail_print(curve, 5)
 
-        print("\nDrawdown (last 5):")
-        drawdown = portfolio.drawdown()
-        _safe_tail_print(drawdown, 5)
+            print("\nDrawdown (last 5):")
+            drawdown = portfolio.drawdown()
+            _safe_tail_print(drawdown, 5)
 
-        print("\nRolling annualised std (last 5):")
-        rolling_std = portfolio.rolling_ann_std()
-        _safe_tail_print(rolling_std, 5)
+            print("\nRolling annualised std (last 5):")
+            rolling_std = portfolio.rolling_ann_std()
+            _safe_tail_print(rolling_std, 5)
 
-        base_currency = getattr(config_obj, "base_currency", "") or ""
+            base_currency = getattr(config_obj, "base_currency", "") or ""
 
-        print("\nPerformance per instrument (net % returns):")
-        per_inst_rows, per_inst_headers = _print_per_instrument_perf(portfolio, instrument_filter=instrument_list)
+            print("\nPerformance per instrument (net % returns):")
+            per_inst_rows, per_inst_headers = _print_per_instrument_perf(
+                portfolio, instrument_filter=instrument_list
+            )
 
         try:
-            rule_perf_tables = _collect_rule_performance_tables(system, portfolio, base_currency=base_currency, verbose=True)
+            rule_perf_tables = _collect_rule_performance_tables(
+                system, portfolio, base_currency=base_currency, verbose=True
+            )
         except Exception as err:
             print(f"Rule-level performance skipped ({err})")
             rule_perf_tables = {
@@ -1863,18 +2257,41 @@ def run_backtest(backtest_config: BacktestConfig, data_factory=dbFuturesSimData,
             figures["equity"] = results_dir / f"equity_curve_{timestamp}.png"
             figures["drawdown"] = results_dir / f"drawdown_{timestamp}.png"
             figures["rolling_std"] = results_dir / f"rolling_ann_std_{timestamp}.png"
-            figures["notional_uncapped"] = results_dir / f"notional_positions_uncapped_{timestamp}.png"
-            figures["notional_capped"] = results_dir / f"notional_positions_capped_{timestamp}.png"
-            figures["buffered_positions"] = results_dir / f"buffered_positions_{timestamp}.png"
+            figures["notional_uncapped"] = (
+                results_dir / f"notional_positions_uncapped_{timestamp}.png"
+            )
+            figures["notional_capped"] = (
+                results_dir / f"notional_positions_capped_{timestamp}.png"
+            )
+            figures["buffered_positions"] = (
+                results_dir / f"buffered_positions_{timestamp}.png"
+            )
             if rule_group_curves:
                 figures["rule_groups"] = results_dir / f"rule_groups_{timestamp}.png"
 
             _plot_series(curve, figures["equity"], title="Equity curve")
             _plot_series(drawdown, figures["drawdown"], title="Drawdown")
-            _plot_series(rolling_std, figures["rolling_std"], title="Rolling annualised std")
-            _plot_notional_positions(system, figures["notional_uncapped"], instruments_for_output, clip_bounds=None)
-            _plot_notional_positions(system, figures["notional_capped"], instruments_for_output, clip_bounds=(-20, 20))
-            _plot_buffered_positions(system, figures["buffered_positions"], instruments_for_output, clip_bounds=None)
+            _plot_series(
+                rolling_std, figures["rolling_std"], title="Rolling annualised std"
+            )
+            _plot_notional_positions(
+                system,
+                figures["notional_uncapped"],
+                instruments_for_output,
+                clip_bounds=None,
+            )
+            _plot_notional_positions(
+                system,
+                figures["notional_capped"],
+                instruments_for_output,
+                clip_bounds=(-20, 20),
+            )
+            _plot_buffered_positions(
+                system,
+                figures["buffered_positions"],
+                instruments_for_output,
+                clip_bounds=None,
+            )
             if rule_group_curves:
                 _plot_multiple_series(
                     rule_group_curves,
@@ -1883,25 +2300,81 @@ def run_backtest(backtest_config: BacktestConfig, data_factory=dbFuturesSimData,
                     ylabel=f"P&L {base_currency}".strip(),
                 )
 
-        qs_html = (results_dir / f"backtest_report_qs_{timestamp}.html") if cfg.include_quantstats else None
+        qs_html = (
+            (results_dir / f"backtest_report_qs_{timestamp}.html")
+            if cfg.include_quantstats
+            else None
+        )
         if cfg.include_quantstats:
             _quantstats_report(portfolio.percent, qs_html)
 
-        per_inst_rows = sorted(per_inst_rows, key=lambda r: r[0]) if per_inst_rows else []
-        per_rule_rows = sorted(per_rule_rows, key=lambda r: r[0]) if per_rule_rows else []
-        rule_variation_rows = sorted(rule_variation_rows, key=lambda r: r[0]) if rule_variation_rows else []
+        per_inst_rows = (
+            sorted(per_inst_rows, key=lambda r: r[0]) if per_inst_rows else []
+        )
+        per_rule_rows = (
+            sorted(per_rule_rows, key=lambda r: r[0]) if per_rule_rows else []
+        )
+        rule_variation_rows = (
+            sorted(rule_variation_rows, key=lambda r: r[0])
+            if rule_variation_rows
+            else []
+        )
 
-        per_inst_headers = per_inst_headers or ["Name", "Total", "CAGR", "Vol", "Sharpe", "MaxDD"]
-        per_rule_headers = per_rule_headers or ["Name", "P&L", "Total", "CAGR", "Vol", "Sharpe", "MaxDD", "t-stat", "p-value"]
+        per_inst_headers = per_inst_headers or [
+            "Name",
+            "Total",
+            "CAGR",
+            "Vol",
+            "Sharpe",
+            "MaxDD",
+        ]
+        per_rule_headers = per_rule_headers or [
+            "Name",
+            "P&L",
+            "Total",
+            "CAGR",
+            "Vol",
+            "Sharpe",
+            "IC",
+            "MaxDD",
+            "t-stat",
+            "p-value",
+        ]
         rule_variation_headers = rule_variation_headers or per_rule_headers
 
-        cost_rows = _build_spread_cost_rows(spread_costs_used, spread_costs_missing, instruments_for_output)
-        notional_rows = _collect_notional_positions_by_year(system, instruments_for_output)
-        trades_rows = _collect_trades(system, instrument_filter=instruments_for_output, max_rows=200, base_currency=base_currency)
-        summary_rows = _build_summary_rows(stats, portfolio, base_currency=base_currency)
+        if cfg.ic_only:
+            summary_rows = []
+            cost_rows = []
+            notional_rows = []
+            trades_rows = []
+        else:
+            cost_rows = _build_spread_cost_rows(
+                spread_costs_used, spread_costs_missing, instruments_for_output
+            )
+            notional_rows = _collect_notional_positions_by_year(
+                system, instruments_for_output
+            )
+            trades_rows = _collect_trades(
+                system,
+                instrument_filter=instruments_for_output,
+                max_rows=200,
+                base_currency=base_currency,
+            )
+            summary_rows = _build_summary_rows(
+                stats, portfolio, base_currency=base_currency
+            )
 
-        pdf_path = (results_dir / f"backtest_report_{timestamp}.pdf") if cfg.include_pdf else None
-        report_txt_path = (results_dir / f"backtest_report_{timestamp}.txt") if cfg.include_report_txt else None
+        report_prefix = "ic_report" if cfg.ic_only else "backtest_report"
+        pdf_path = (
+            (results_dir / f"{report_prefix}_{timestamp}.pdf")
+            if cfg.include_pdf
+            else None
+        )
+        report_txt_path = (
+            (results_dir / f"{report_prefix}_{timestamp}.txt")
+            if cfg.include_report_txt
+            else None
+        )
 
         if cfg.include_pdf and pdf_path is not None:
             _build_unified_pdf(
@@ -1946,21 +2419,31 @@ def run_backtest(backtest_config: BacktestConfig, data_factory=dbFuturesSimData,
                 except Exception:
                     pass
 
-        figures_for_output = {name: path for name, path in figures.items() if path.exists()} if cfg.include_plots else {}
+        figures_for_output = (
+            {name: path for name, path in figures.items() if path.exists()}
+            if cfg.include_plots
+            else {}
+        )
 
         estimates_yaml = None
-        estimated_names = _estimated_attr_names_from_config(config_obj)
-        if cfg.export_estimates and estimated_names:
-            estimates_yaml = results_dir / f"{cfg.config_path.stem}_estimated_params_{timestamp}.yaml"
-            try:
-                systemDiag(system).yaml_config_with_estimated_parameters(
-                    str(estimates_yaml),
-                    attr_names=estimated_names,
+        if not cfg.ic_only:
+            estimated_names = _estimated_attr_names_from_config(config_obj)
+            if cfg.export_estimates and estimated_names:
+                estimates_yaml = (
+                    results_dir
+                    / f"{cfg.config_path.stem}_estimated_params_{timestamp}.yaml"
                 )
-                print(f"Saved estimated parameters ({', '.join(estimated_names)}) to {estimates_yaml}")
-            except Exception as err:
-                print(f"Estimated parameters export skipped ({err})")
-                estimates_yaml = None
+                try:
+                    systemDiag(system).yaml_config_with_estimated_parameters(
+                        str(estimates_yaml),
+                        attr_names=estimated_names,
+                    )
+                    print(
+                        f"Saved estimated parameters ({', '.join(estimated_names)}) to {estimates_yaml}"
+                    )
+                except Exception as err:
+                    print(f"Estimated parameters export skipped ({err})")
+                    estimates_yaml = None
 
         outputs = BacktestOutputs(
             results_dir=results_dir,
@@ -1975,7 +2458,9 @@ def run_backtest(backtest_config: BacktestConfig, data_factory=dbFuturesSimData,
         if cfg.use_cache and cache_path is not None:
             try:
                 try:
-                    system.config.backtest_compress = _infer_cache_compress(cache_path, cfg.cache_compress)
+                    system.config.backtest_compress = _infer_cache_compress(
+                        cache_path, cfg.cache_compress
+                    )
                 except Exception:
                     pass
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2007,6 +2492,7 @@ def run_backtest(backtest_config: BacktestConfig, data_factory=dbFuturesSimData,
 # Text report
 # =========================
 
+
 def _write_report_txt(
     output_path: Path,
     summary_rows: list,
@@ -2034,8 +2520,23 @@ def _write_report_txt(
             sections.append(" | ".join([str(x) for x in row]))
         sections.append("")
 
-    per_inst_labels = per_inst_headers or ["Name", "Total", "CAGR", "Vol", "Sharpe", "MaxDD"]
-    per_rule_labels = per_rule_headers or ["Name", "Total", "CAGR", "Vol", "Sharpe", "MaxDD"]
+    per_inst_labels = per_inst_headers or [
+        "Name",
+        "Total",
+        "CAGR",
+        "Vol",
+        "Sharpe",
+        "MaxDD",
+    ]
+    per_rule_labels = per_rule_headers or [
+        "Name",
+        "Total",
+        "CAGR",
+        "Vol",
+        "Sharpe",
+        "IC",
+        "MaxDD",
+    ]
     rule_variation_rows = rule_variation_rows or []
     rule_variation_labels = rule_variation_headers or per_rule_labels
     rule_correlation_rows = rule_correlation_rows or []
@@ -2043,13 +2544,37 @@ def _write_report_txt(
 
     add_table("Summary", summary_rows, ["Metric", "Value", "UoM", "Description"])
     add_table("Performance per instrument", per_inst_rows, per_inst_labels)
-    add_table("Performance per rule (aggregated variations)", per_rule_rows, per_rule_labels)
-    add_table("Performance per rule variation", rule_variation_rows, rule_variation_labels)
-    add_table("Correlation between strategies/rules", rule_correlation_rows, rule_correlation_labels)
+    add_table(
+        "Performance per rule (aggregated variations)", per_rule_rows, per_rule_labels
+    )
+    add_table(
+        "Performance per rule variation", rule_variation_rows, rule_variation_labels
+    )
+    add_table(
+        "Correlation between strategies/rules",
+        rule_correlation_rows,
+        rule_correlation_labels,
+    )
     add_table("Spread costs used", cost_rows, ["Instrument", "Source", "Spread"])
-    add_table("Notional positions (annual average)", notional_rows, ["Instrument", "Year", "Avg notional"])
-    add_table("Executed trades (from buffered positions)", trades_rows,
-              ["Date", "Instrument", "Trade", "New pos", "Pos (base)", "Spread", "Commission", "Total cost"])
+    add_table(
+        "Notional positions (annual average)",
+        notional_rows,
+        ["Instrument", "Year", "Avg notional"],
+    )
+    add_table(
+        "Executed trades (from buffered positions)",
+        trades_rows,
+        [
+            "Date",
+            "Instrument",
+            "Trade",
+            "New pos",
+            "Pos (base)",
+            "Spread",
+            "Commission",
+            "Total cost",
+        ],
+    )
 
     if not sections:
         return
@@ -2064,43 +2589,107 @@ def _write_report_txt(
 # CLI
 # =========================
 
+
 def parse_args(argv=None) -> BacktestConfig:
-    parser = argparse.ArgumentParser(description="Run a futures backtest using DB data (Mongo + Parquet).")
+    parser = argparse.ArgumentParser(
+        description="Run a futures backtest using DB data (Mongo + Parquet)."
+    )
 
-    parser.add_argument("--config", dest="config_path", default=None,
-                        help="Config file path (required unless <script>_config.yaml sits next to the entrypoint).")
+    parser.add_argument(
+        "--config",
+        dest="config_path",
+        default=None,
+        help="Config file path (required unless <script>_config.yaml sits next to the entrypoint).",
+    )
 
-    parser.add_argument("--results-dir", default=None,
-                        help="Output directory (default: backtest_results next to the config).")
+    parser.add_argument(
+        "--results-dir",
+        default=None,
+        help="Output directory (default: backtest_results next to the config).",
+    )
 
-    parser.add_argument("--timestamp", default=None, help="Custom timestamp for output files (default: now).")
+    parser.add_argument(
+        "--timestamp",
+        default=None,
+        help="Custom timestamp for output files (default: now).",
+    )
 
-    parser.add_argument("--fallback-spread", type=float, default=DEFAULT_FALLBACK_SPREAD,
-                        help="Fallback spread if missing or zero in the DB.")
+    parser.add_argument(
+        "--fallback-spread",
+        type=float,
+        default=DEFAULT_FALLBACK_SPREAD,
+        help="Fallback spread if missing or zero in the DB.",
+    )
 
-    parser.add_argument("--use-db-capital", action="store_true",
-                        help="Pull capital and base currency from DB instead of YAML.")
+    parser.add_argument(
+        "--use-db-capital",
+        action="store_true",
+        help="Pull capital and base currency from DB instead of YAML.",
+    )
 
-    parser.add_argument("--capital-multiplier", default=None,
-                        help="Override capital compounding: fixed / full / half, or dotted function path.")
+    parser.add_argument(
+        "--capital-multiplier",
+        default=None,
+        help="Override capital compounding: fixed / full / half, or dotted function path.",
+    )
 
-    parser.add_argument("--strategy-name", default=None,
-                        help="Strategy name for DB capital lookup (default: config filename stem).")
+    parser.add_argument(
+        "--strategy-name",
+        default=None,
+        help="Strategy name for DB capital lookup (default: config filename stem).",
+    )
 
-    parser.add_argument("--instruments", default=None,
-                        help="Comma-separated list of instruments to include (default: all).")
+    parser.add_argument(
+        "--instruments",
+        default=None,
+        help="Comma-separated list of instruments to include (default: all).",
+    )
 
-    parser.add_argument("--no-plots", action="store_true", help="Disable PNG generation.")
-    parser.add_argument("--no-quantstats", action="store_true", help="Disable the QuantStats HTML report.")
-    parser.add_argument("--no-pdf", action="store_true", help="Disable the unified PDF.")
-    parser.add_argument("--no-report", dest="no_report", action="store_true", help="Disable the txt summary output.")
+    parser.add_argument(
+        "--no-plots", action="store_true", help="Disable PNG generation."
+    )
+    parser.add_argument(
+        "--no-quantstats",
+        action="store_true",
+        help="Disable the QuantStats HTML report.",
+    )
+    parser.add_argument(
+        "--no-pdf", action="store_true", help="Disable the unified PDF."
+    )
+    parser.add_argument(
+        "--no-report",
+        dest="no_report",
+        action="store_true",
+        help="Disable the txt summary output.",
+    )
 
-    parser.add_argument("--no-debug-log", action="store_true", help="Disable the terminal output .log file.")
-    parser.add_argument("--keep-intermediate-figs", action="store_true", help="Keep PNG figures.")
-    parser.add_argument("--cache", action="store_true", help="Load/save the system cache to speed up reruns.")
+    parser.add_argument(
+        "--no-debug-log",
+        action="store_true",
+        help="Disable the terminal output .log file.",
+    )
+    parser.add_argument(
+        "--keep-intermediate-figs", action="store_true", help="Keep PNG figures."
+    )
+    parser.add_argument(
+        "--cache",
+        action="store_true",
+        help="Load/save the system cache to speed up reruns.",
+    )
 
-    parser.add_argument("--cache-file", default=None, help="Custom path for the system cache pickle.")
-    parser.add_argument("--no-cache-compress", action="store_true", help="Disable backtest_compress before pickling.")
+    parser.add_argument(
+        "--cache-file", default=None, help="Custom path for the system cache pickle."
+    )
+    parser.add_argument(
+        "--no-cache-compress",
+        action="store_true",
+        help="Disable backtest_compress before pickling.",
+    )
+    parser.add_argument(
+        "--ic-only",
+        action="store_true",
+        help="Only compute information coefficient metrics and emit a reduced report (prefers an existing cache).",
+    )
 
     args = parser.parse_args(argv)
 
@@ -2126,6 +2715,7 @@ def parse_args(argv=None) -> BacktestConfig:
         use_db_capital=args.use_db_capital,
         strategy_name=args.strategy_name,
         capital_multiplier=args.capital_multiplier,
+        ic_only=args.ic_only,
     )
 
 
