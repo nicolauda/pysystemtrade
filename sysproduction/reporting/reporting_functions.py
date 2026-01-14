@@ -277,6 +277,8 @@ def parse_report_results_contains_figures(
 
     parsed_report = ParsedReport(pdf_filename=merged_filename)
 
+    _cleanup_temporary_figures(report_results, data)
+
     return parsed_report
 
 
@@ -441,3 +443,21 @@ def _generate_temp_pdf_filename(
     full_filename = os.path.join(use_directory_resolved, filename)
 
     return full_filename
+
+
+def _cleanup_temporary_figures(report_results: list, data: dataBlob) -> None:
+    """
+    Delete temporary figure PDFs once they have been merged into the final report.
+    """
+    for report_item in report_results:
+        if type(report_item) is not figure:
+            continue
+        temp_pdf_path = report_item.pdf_filename
+        try:
+            os.remove(temp_pdf_path)
+        except FileNotFoundError:
+            continue
+        except Exception as exc:  # pragma: no cover - best effort cleanup
+            data.log.warning(
+                "Could not remove temporary figure %s: %s", temp_pdf_path, exc
+            )
