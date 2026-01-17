@@ -5,6 +5,9 @@ import pandas as pd
 
 from syscore.exceptions import missingContract, missingData
 from syscore.constants import arg_not_supplied
+from sysdata.production.historic_contract_positions import (
+    any_positions_since_start_date,
+)
 from sysobjects.contracts import futuresContract
 from sysobjects.production.tradeable_object import instrumentStrategy
 
@@ -51,12 +54,52 @@ def get_daily_perc_pandl(data):
     return perc_pandl_series * 100
 
 
-def get_total_capital_pandl(data, start_date, end_date=arg_not_supplied):
+def _slice_pandl_series_for_date_range(
+    pandl_series: pd.Series,
+    start_date: datetime.datetime,
+    end_date: datetime.datetime,
+    requested_window: datetime.timedelta | None = None,
+) -> pd.Series:
+    """
+    Clamp a P&L series to the available data window so we still return something
+    useful when the requested window extends beyond the recorded dates.
+    """
+    if len(pandl_series.index) == 0:
+        return pandl_series
+
+    data_last_date = min(end_date, pandl_series.index.max())
+    requested_window = (
+        end_date - start_date if requested_window is None else requested_window
+    )
+
+    if start_date > data_last_date:
+        effective_start_date = data_last_date - requested_window
+    else:
+        effective_start_date = start_date
+
+    data_first_date = pandl_series.index.min()
+    effective_start_date = max(effective_start_date, data_first_date)
+
+    return pandl_series[effective_start_date:data_last_date]
+
+
+def get_total_capital_pandl(
+    data,
+    start_date,
+    end_date=arg_not_supplied,
+    requested_window: datetime.timedelta | None = None,
+):
     if end_date is arg_not_supplied:
         end_date = datetime.datetime.now()
     perc_pandl_series = get_daily_perc_pandl(data)
 
-    relevant_pandl = perc_pandl_series[start_date:end_date]
+    perc_pandl_series = _slice_pandl_series_for_date_range(
+        perc_pandl_series,
+        start_date,
+        end_date,
+        requested_window=requested_window,
+    )
+    relevant_pandl = perc_pandl_series
     pandl_in_period = relevant_pandl.sum()
 
     return pandl_in_period
@@ -73,11 +116,38 @@ class pandlCalculateAndStore(object):
         self.start_date = start_date
         self.end_date = end_date
 
+    @property
+    def requested_window(self) -> datetime.timedelta:
+        return self.end_date - self.start_date
+
+    @property
+    def capital_pandl_last_date(self) -> datetime.datetime:
+        try:
+            last_date = getattr(self, "_capital_pandl_last_date")
+        except AttributeError:
+            perc_pandl_series = get_daily_perc_pandl(self.data)
+            if len(perc_pandl_series.index) == 0:
+                last_date = self.end_date
+            else:
+                last_date = perc_pandl_series.index.max()
+            setattr(self, "_capital_pandl_last_date", last_date)
+
+        return last_date
+
+    @property
+    def pandl_end_date(self) -> datetime.datetime:
+        return min(self.end_date, self.capital_pandl_last_date)
+
     def get_strategy_pandl_and_residual(self):
         strategies_pandl = self.get_ranked_list_of_pandl_by_strategy_in_date_range()
 
         total_pandl_strategies = strategies_pandl.pandl.sum()
-        total_pandl = get_total_capital_pandl(self.data, self.start_date, self.end_date)
+        total_pandl = get_total_capital_pandl(
+            self.data,
+            self.start_date,
+            self.pandl_end_date,
+            requested_window=self.requested_window,
+        )
         residual_pandl = total_pandl - total_pandl_strategies
         residual_dfrow = pd.DataFrame(dict(codes=["residual"], pandl=residual_pandl))
         strategies_pandl = strategies_pandl._append(residual_dfrow)
@@ -143,7 +213,9 @@ class pandlCalculateAndStore(object):
         return list_pandl
 
     def get_period_perc_pandl_for_all_strategies_in_date_range(self):
-        strategy_list = get_list_of_strategies(self.data)
+        strategy_list = get_list_of_strategies(
+            self.data, start_date=self.start_date, end_date=self.end_date
+        )
         list_pandl = [
             PandL(
                 strategy_name,
@@ -215,7 +287,7 @@ class pandlCalculateAndStore(object):
         self, instrument_code: str
     ) -> pd.DataFrame:
         pandl_df_all_data = get_df_of_perc_pandl_series_for_instrument_all_strategies_across_contracts_in_date_range(
-            self.data, instrument_code, self.start_date, self.end_date
+            self.data, instrument_code, self.start_date, self.pandl_end_date
         )
 
         pandl_df = self._slice_pandl_df_for_date_range(pandl_df_all_data)
@@ -256,19 +328,31 @@ class pandlCalculateAndStore(object):
         self, strategy_name: str
     ):
         instrument_list = get_list_of_instruments_held_for_a_strategy(
-            self.data, strategy_name
+            self.data,
+            strategy_name,
+            start_date=self.start_date,
+            end_date=self.end_date,
         )
         if len(instrument_list) == 0:
             raise missingData
 
-        pandl_list = [
-            self.perc_pandl_series_for_strategy_instrument_vs_total_capital(
-                instrumentStrategy(strategy_name, instrument_code)
+        pandl_list = []
+        filtered_instruments = []
+        for instrument_code in instrument_list:
+            pandl_series = (
+                self.perc_pandl_series_for_strategy_instrument_vs_total_capital(
+                    instrumentStrategy(strategy_name, instrument_code)
+                )
             )
-            for instrument_code in instrument_list
-        ]
+            if pandl_series.empty:
+                continue
+            filtered_instruments.append(instrument_code)
+            pandl_list.append(pandl_series)
 
-        return instrument_list, pandl_list
+        if len(pandl_list) == 0:
+            raise missingData
+
+        return filtered_instruments, pandl_list
 
     def perc_pandl_series_for_strategy_instrument_vs_total_capital(
         self, instrument_strategy: instrumentStrategy
@@ -314,8 +398,8 @@ class pandlCalculateAndStore(object):
         if len(pandl_df.index) == 0:
             return pandl_df
 
-        data_last_date = min(self.end_date, pandl_df.index.max())
-        requested_window = self.end_date - self.start_date
+        data_last_date = min(self.pandl_end_date, pandl_df.index.max())
+        requested_window = self.requested_window
 
         if self.start_date > data_last_date:
             effective_start_date = data_last_date - requested_window
@@ -373,13 +457,35 @@ def get_list_of_contracts_held_for_an_instrument_in_date_range(
     return contract_list
 
 
-def get_list_of_instruments_held_for_a_strategy(data, strategy_name):
+def get_list_of_instruments_held_for_a_strategy(
+    data, strategy_name, start_date=None, end_date=None
+):
     diag_positions = diagPositions(data)
     instrument_list = diag_positions.get_list_of_instruments_for_strategy_with_position(
-        strategy_name
+        strategy_name,
+        ignore_zero_positions=False,
     )
 
-    return instrument_list
+    if start_date is None or end_date is None:
+        return instrument_list
+
+    instruments_with_activity = []
+    for instrument_code in instrument_list:
+        try:
+            position_series = get_position_series_for_instrument_strategy(
+                data,
+                instrument_code=instrument_code,
+                strategy_name=strategy_name,
+            )
+        except missingData:
+            continue
+
+        if any_positions_since_start_date(
+            position_series, start_date=start_date, end_date=end_date
+        ):
+            instruments_with_activity.append(instrument_code)
+
+    return instruments_with_activity
 
 
 def get_perc_pandl_series_for_contract(data, instrument_code, contract_id):
@@ -519,9 +625,31 @@ def get_position_series_for_contract(data, instrument_code: str, contract_id: st
     return pos_series
 
 
-def get_list_of_strategies(data):
+def get_list_of_strategies(data, start_date=None, end_date=None):
     diag_positions = diagPositions(data)
-    return diag_positions.get_list_of_strategies_with_positions()
+    if start_date is None or end_date is None:
+        return diag_positions.get_list_of_strategies_with_positions()
+
+    list_of_instrument_strategies = (
+        diag_positions.db_strategy_position_data.get_list_of_instrument_strategies()
+    )
+    strategy_names = list_of_instrument_strategies.get_list_of_strategies()
+
+    strategies_with_activity = [
+        strategy_name
+        for strategy_name in strategy_names
+        if len(
+            get_list_of_instruments_held_for_a_strategy(
+                data,
+                strategy_name,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        )
+        > 0
+    ]
+
+    return strategies_with_activity
 
 
 def list_pandl_to_df(list_pandl):

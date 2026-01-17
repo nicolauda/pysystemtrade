@@ -393,8 +393,12 @@ class reportingApi(object):
         return total_capital_pandl
 
     def _get_total_capital_pandl(self) -> float:
+        calculator = self.pandl_calculator
         total_capital_pandl = get_total_capital_pandl(
-            self.data, self.start_date, end_date=self.end_date
+            self.data,
+            self.start_date,
+            end_date=calculator.pandl_end_date,
+            requested_window=calculator.requested_window,
         )
 
         return total_capital_pandl
