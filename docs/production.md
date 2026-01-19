@@ -1095,6 +1095,15 @@ The one or two contract orders will look much the same as above, except that the
 
 Note that the roll_order flag will still be False: because these are trades we would do anyway, even if we weren't rolling.
 
+#### Automatic fallback from forced roll states to Passive
+
+`run_stack_handler` will downgrade certain roll states to `Passive` if there is no longer any position in the priced (front) contract. The check is done in `update_positions.check_and_auto_update_roll_state`, which runs before creating roll orders. If the current state is one that normally generates orders (`Force`, `Force_Outright`, or `Close`) but the priced contract position is zero, the system:
+
+- Sets the roll state to `Passive`.
+- Logs a CRITICAL message of the form `Set roll state to passive for <instrument> because no longer have position in priced contract`.
+
+This prevents unnecessary roll orders when the priced leg is already flat (for example because normal trading flattened it before the roll). If you genuinely want to keep rolling aggressively, re-set the roll state only after confirming that there is again a non-zero priced position; otherwise leave it in `Passive` or move to `No_Roll` via `interactive_update_roll_status`.
+
 
 ### Instrument and contract order creation - active roll orders
 
