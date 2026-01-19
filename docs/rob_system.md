@@ -7,7 +7,7 @@ This chapter is written as a step-by-step walkthrough of two reference pipelines
 
 We explain why each stage exists, how data flows, and how the production pipeline extends the teaching version. Blog references are included when they give extra context (mainly from Rob Carver’s “Qoppac” / “This Blog Is Systematic” site).
 
-## 1) System architecture at 10,000 ft
+## 1) System architecture overview
 
 Both systems use the stage framework in `systems/basesystem.py`. A stage has:
 - a stable `name` (used to wire the DAG),
