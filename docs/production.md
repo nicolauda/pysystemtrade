@@ -1982,6 +1982,11 @@ default_roll_state_if_undecided: 'Ask'
 auto_roll_expired: True
 ```
 
+When the same logic runs non-interactively (for example via `run_update_roll_status`
+in a scheduled task) any situation that would normally ask you to choose a roll
+state falls back to `Force` automatically so the process cannot hang waiting for
+input.
+
 What happens next will depend on the parameters you have decided upon:
 
 - If the volume in the forward contract is less than the required relative volume, we do nothing

@@ -1956,6 +1956,8 @@ The raw data stage is used to pre-process data for calculating trading rules, sc
 
 The base RawData class includes methods to get instrument prices, daily returns, volatility, and normalised returns (return over volatility).
 
+Periods where the daily return volatility is zero (or effectively zero) are now set to `NaN` before computing vol-normalised returns to avoid divide-by-zero warnings; downstream calculations will naturally skip those gaps.
+
 As we are trading futures the raw data class has some extra methods needed to calculate the carry rule for futures, and to expose the intermediate calculations.
 
 (Versions prior to 1.06 had a separate FuturesRawData class)
