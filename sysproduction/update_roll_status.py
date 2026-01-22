@@ -33,6 +33,7 @@ class updateRollStatus:
             data=self.data, use_default=True
         )
         auto_parameters = self._ensure_non_interactive_defaults(auto_parameters)
+        fallback_roll_state = RollState.Force
 
         days_ahead = auto_parameters.near_expiry_days
         instrument_list = get_list_of_instruments_to_auto_cycle(
@@ -54,6 +55,7 @@ class updateRollStatus:
                     api=self.api,
                     roll_data=roll_data,
                     auto_parameters=auto_parameters,
+                    fallback_roll_state_if_ask=fallback_roll_state,
                 )
 
                 if roll_state_required is no_change_required:
@@ -95,6 +97,15 @@ class updateRollStatus:
         if auto_parameters.default_roll_state_if_undecided == ASK_FOR_STATE:
             self.data.log.debug(
                 "Default roll state set to Ask; using Force to avoid interactive prompt during scheduled roll update"
+            )
+            auto_parameters.default_roll_state_if_undecided = RollState.Force
+
+        if not isinstance(
+            auto_parameters.default_roll_state_if_undecided, RollState
+        ):
+            self.data.log.warning(
+                "Default roll state %s not recognised; using Force instead"
+                % str(auto_parameters.default_roll_state_if_undecided)
             )
             auto_parameters.default_roll_state_if_undecided = RollState.Force
 

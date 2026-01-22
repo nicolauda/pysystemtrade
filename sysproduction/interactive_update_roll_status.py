@@ -417,14 +417,28 @@ def auto_selected_roll_state_instrument(
     api: reportingApi,
     roll_data: RollDataWithStateReporting,
     auto_parameters: autoRollParameters,
+    fallback_roll_state_if_ask: RollState | None = None,
 ) -> RollState:
     run_roll_report(api, roll_data.instrument_code)
     roll_state_required = suggest_roll_state_for_instrument(
         roll_data=roll_data, auto_parameters=auto_parameters
     )
+    if isinstance(fallback_roll_state_if_ask, str):
+        try:
+            fallback_roll_state_if_ask = RollState[fallback_roll_state_if_ask]
+        except KeyError:
+            fallback_roll_state_if_ask = None
+
     if roll_state_required == ASK_FOR_STATE:
-        print("Have to input roll state (recommend Force, Force_Outright or Close)")
-        roll_state_required = get_roll_state_required(roll_data)
+        if fallback_roll_state_if_ask is not None:
+            print_with_landing_strips_around(
+                "No automatic roll state available; defaulting to %s"
+                % fallback_roll_state_if_ask
+            )
+            roll_state_required = fallback_roll_state_if_ask
+        else:
+            print("Have to input roll state (recommend Force, Force_Outright or Close)")
+            roll_state_required = get_roll_state_required(roll_data)
 
     original_roll_status = roll_data.original_roll_status
     if original_roll_status == roll_state_required:
