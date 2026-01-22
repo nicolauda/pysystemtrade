@@ -299,6 +299,15 @@ class RawData(SystemStage):
 
         returnvol = self.daily_returns_volatility(instrument_code).shift(1)
         dailyreturns = self.daily_returns(instrument_code)
+
+        if isinstance(returnvol, pd.DataFrame):
+            returnvol = returnvol.iloc[:, 0]
+        if isinstance(dailyreturns, pd.DataFrame):
+            dailyreturns = dailyreturns.iloc[:, 0]
+
+        returnvol = returnvol.mask(returnvol.abs() <= 1e-12)
+        (dailyreturns, returnvol) = dailyreturns.align(returnvol, join="inner")
+
         norm_return = dailyreturns / returnvol
 
         return norm_return
