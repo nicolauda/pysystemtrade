@@ -137,8 +137,16 @@ def process_multiple_prices_single_instrument(
     return multiple_prices
 
 
-def adjust_roll_calendar(instrument_code, roll_calendar):
-    db_prices_per_contract = diag_prices.db_futures_contract_price_data
+def adjust_roll_calendar(instrument_code, roll_calendar, diag_prices_override=None):
+    """
+    Adjust roll calendar so roll dates align to available price data.
+
+    Optional diag_prices_override lets callers supply a diagPrices bound to the
+    same dataBlob/config they are working with instead of falling back to the
+    module-level default.
+    """
+    diag_prices_to_use = diag_prices_override or diag_prices
+    db_prices_per_contract = diag_prices_to_use.db_futures_contract_price_data
     print("Getting prices to adjust roll calendar")
     dict_of_prices = db_prices_per_contract.get_merged_prices_for_instrument(
         instrument_code
