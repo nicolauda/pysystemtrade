@@ -1,10 +1,16 @@
 """
 Suite of functions to analyse a system, and produce configuration that can be saved to a yaml file
 """
-from syscore.dateutils import ROOT_BDAYS_INYEAR
-from systems.forecast_mapping import estimate_mapping_params
+
 import yaml
 import numpy as np
+import pandas as pd
+
+from syscore.dateutils import ROOT_BDAYS_INYEAR
+from syscore.interactive.progress_bar import progressBar
+from systems.forecast_mapping import estimate_mapping_params
+from sysquant.estimators.cross_sectional_ic import CrossSectionalIC
+
 
 
 class systemDiag(object):
@@ -242,6 +248,67 @@ class systemDiag(object):
         )
 
         return instrument_div_multiplier
+
+    def get_cross_sectional_ic(
+        self,
+        horizon_min: int,
+        horizon_max: int,
+        scale_by_sqrt: bool = True,
+        show_progress: bool = True,
+    ) -> tuple[
+        list[str],
+        dict[int, dict[str, pd.Series]],
+        dict[int, dict[str, pd.Series]],
+    ]:
+        """Compute cross-sectional IC grids across horizons and rules.
+
+        Args:
+            system: System instance providing forecasts and raw returns.
+            horizon_min: Smallest horizon in days (inclusive).
+            horizon_max: Largest horizon in days (inclusive).
+            scale_by_sqrt: If True, divide each horizon sum by sqrt(h).
+            show_progress: If True, display a progress bar.
+
+        Returns:
+            Tuple of (rules_list, IC_pearson, IC_spearman). `rules_list` is the
+            ordered list of rule names used. The IC dicts are keyed by horizon
+            (int) then rule name, with Series values indexed by date.
+
+        Notes:
+            Forecasts are grouped by rule, forward returns are computed per
+            horizon, and `cross_sectional_ic` is applied for each rule/horizon
+            pair. If a rule/horizon has no overlap in columns or dates, the
+            stored Series can be empty.
+        """
+        system = self.system
+        forecast_df_by_rule = system.combForecast.get_forecast_df_by_rule()
+        forward_returns_by_horizon = system.rawdata.get_forward_returns_by_horizon(
+            horizon_min=horizon_min,
+            horizon_max=horizon_max,
+            scale_by_sqrt=scale_by_sqrt,
+        )
+
+        rules_list = list(forecast_df_by_rule.keys())
+        IC_pearson: dict[int, dict[str, pd.Series]] = {}
+        IC_spearman: dict[int, dict[str, pd.Series]] = {}
+
+        progress = None
+        total_iterations = len(forward_returns_by_horizon) * len(rules_list)
+        if show_progress and total_iterations > 0:
+            progress = progressBar(total_iterations, "Cross-sectional IC", show_each_time=True)
+
+        for h, forward_ret_df in forward_returns_by_horizon.items():
+            IC_pearson[h] = {}
+            IC_spearman[h] = {}
+            for rule in rules_list:
+                pearson_ic, spearman_ic = CrossSectionalIC.cross_sectional_ic(
+                    forecast_df_by_rule[rule], forward_ret_df
+                )
+                IC_pearson[h][rule] = pearson_ic
+                IC_spearman[h][rule] = spearman_ic
+                if progress is not None:
+                    progress.iterate()
+        return (rules_list, IC_pearson, IC_spearman)
 
     def output_config_with_estimated_parameters(
         self,

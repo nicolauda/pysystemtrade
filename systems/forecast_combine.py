@@ -1309,6 +1309,61 @@ class ForecastCombine(SystemStage):
 
         return forecast_data
 
+    @diagnostic()
+    def get_forecast_by_rule(self) -> dict[str, dict[str, pd.Series]]:
+        """Return forecasts grouped by rule and instrument.
+
+        Args:
+            system: Fully initialized System with `combForecast` available and
+                instruments already loaded.
+
+        Returns:
+            Nested dict keyed by rule name then instrument, where each value
+            is the forecast Series for that rule and instrument. Series are
+            returned as provided by the system (typically date-indexed).
+
+        Notes:
+            Forecasts are pulled via
+            `System.combForecast.get_all_forecasts_for_a_list_of_instruments`,
+            then organized using each instrument's trading rule list.
+        """
+        system = self.parent
+        instrument_list = system.get_instrument_list()
+        forecasts_all_instruments = (
+            system.combForecast.get_all_forecasts_for_a_list_of_instruments(instrument_list)
+        )
+        forecast_by_instrument = {
+            instrument: forecast
+            for instrument, forecast in zip(instrument_list, forecasts_all_instruments)
+        }
+        forecast_by_rule: dict[str, dict[str, pd.Series]] = {}
+        for instrument, forecast in forecast_by_instrument.items():
+            rule_variation_list = system.combForecast.get_trading_rule_list(instrument)
+            for rule in rule_variation_list:
+                forecast_by_rule.setdefault(rule, {})[instrument] = forecast_by_instrument[
+                    instrument
+                ][rule]
+        return forecast_by_rule
+    
+    @diagnostic()
+    def get_forecast_df_by_rule(self) -> pd.DataFrame:
+        """Build per-rule forecast DataFrames from the system.
+
+        Args:
+            system: System instance used to source forecasts.
+
+        Returns:
+            Dict mapping rule name to a DataFrame with instruments as columns
+            and dates as index (sorted). Missing values remain as NaN.
+        """
+        forecast_by_rule = self.get_forecast_by_rule()
+        # forecast_by_rule = get_forecast_by_rule(system)
+        forecast_df_by_rule = {
+            rule: pd.DataFrame(rule_forecasts).sort_index()
+            for rule, rule_forecasts in forecast_by_rule.items()
+        }
+        return forecast_df_by_rule
+
     # FORECAST MAPPING
     @diagnostic(not_pickable=True)
     def _get_forecast_mapping_function(self, instrument_code):

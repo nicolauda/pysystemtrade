@@ -1,5 +1,6 @@
 from copy import copy
 
+import numpy as np
 import pandas as pd
 
 from systems.stage import SystemStage
@@ -311,6 +312,46 @@ class RawData(SystemStage):
         norm_return = dailyreturns / returnvol
 
         return norm_return
+
+    @diagnostic()
+    def get_forward_returns_by_horizon(
+        self, horizon_min: int, horizon_max: int, scale_by_sqrt: bool = True
+    ) -> dict[int, pd.DataFrame]:
+        """Compute forward vol-normalized returns for multiple horizons.
+
+        Args:
+            system: System providing raw data and instrument list.
+            horizon_min: Smallest horizon in days (inclusive).
+            horizon_max: Largest horizon in days (inclusive).
+            scale_by_sqrt: When True, divide each horizon sum by sqrt(h) to
+                keep magnitudes comparable across horizons.
+
+        Returns:
+            Dict mapping horizon length to a DataFrame of forward returns with
+            instruments as columns and dates as index.
+
+        Notes:
+            Forward returns are rolling sums of daily vol-normalized returns
+            shifted by -h so values at date t refer to the next h days. This
+            introduces NaNs at the series end and at the initial window.
+        """
+        system = self.parent
+        instrument_list = system.get_instrument_list()
+        vol_norm_returns_df = pd.DataFrame(
+            {
+                instrument: self.get_daily_vol_normalised_returns(instrument)
+                for instrument in instrument_list
+            }
+        ).sort_index()
+
+        horizons = range(horizon_min, horizon_max + 1)
+        forward_returns_by_horizon = {}
+        for h in horizons:
+            fr = vol_norm_returns_df.rolling(h).sum().shift(-h)
+            if scale_by_sqrt:
+                fr = fr / np.sqrt(h)
+            forward_returns_by_horizon[h] = fr
+        return forward_returns_by_horizon
 
     @diagnostic()
     def get_cumulative_daily_vol_normalised_returns(

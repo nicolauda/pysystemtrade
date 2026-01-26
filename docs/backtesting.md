@@ -267,6 +267,36 @@ system.rules.get_raw_forecast("DAX", "ewmac64_256")
 For a complete list of possible intermediate results, use `print(system)` to see the names of each stage, and then `stage_name.methods()`. Or see [this table](#table-of-standard-systemdata-and-systemstage-methods) and look for rows marked with **D** for diagnostic. Alternatively type `system` to get a list of stages, and `system.stagename.methods()` to get a list of methods for a stage (insert the name of the stage, not stagename).
 
 
+### Cross-sectional IC diagnostics
+
+The diagnostic helper `systemDiag.get_cross_sectional_ic(...)` computes cross-sectional
+information coefficients (IC) for each rule and forward horizon. On each date it
+correlates the rule forecast across instruments with the subsequent forward
+returns across instruments, producing a time series of correlations. Pearson IC
+uses raw values; Spearman IC uses ranks to reduce outlier impact.
+
+Theory (brief): for each date t, IC(t) = corr_i(forecast_{i,t}, forward_return_{i,t}),
+so a positive IC implies the forecast ordering aligns with future returns across
+instruments. Returns are vol-normalised and summed over the horizon; if
+`scale_by_sqrt=True` the horizon sums are divided by sqrt(h) so magnitudes are
+comparable across horizons.
+
+Example:
+
+```python
+from systems.diagoutput import systemDiag
+
+diag = systemDiag(system)
+rules, ic_pearson, ic_spearman = diag.get_cross_sectional_ic(
+    horizon_min=1,
+    horizon_max=20,
+    scale_by_sqrt=True,
+    show_progress=True,
+)
+```
+
+Requirements: the system must include the `rawdata` and `combForecast` stages.
+
 ## How do I....See how profitable a backtest was
 
 ```python
@@ -1289,6 +1319,12 @@ sysdiag.yaml_config_with_estimated_parameters('someyamlfile.yaml',
 
 ```
 Change the list of attr_names depending on what you want to output. You can then merge the resulting YAML file into your simulated YAML file. Don't forget to turn off the flags for `use_forecast_div_mult_estimates`,`use_forecast_scale_estimates`,`use_forecast_weight_estimates`,`use_instrument_div_mult_estimates`, and `use_instrument_weight_estimates`.  You don't need to change flag for forecast mapping, since this isn't done by default.
+
+For longer diagnostic runs you can show a progress bar, for example:
+
+```python
+sysdiag.get_cross_sectional_ic(1, 20, show_progress=True)
+```
 
 
 ### Modifying the configuration class

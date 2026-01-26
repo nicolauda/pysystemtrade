@@ -8,7 +8,7 @@
 - add support for import of split frequency CSV prices
 - references to arctic updated in sysinit scripts
 - CONTRIBUTING.md updated
-- 
+- systemDiag cross-sectional IC optionally shows a progress bar
 ## Version 1.80
 
 - *NO LONGER REQUIRES ARCTIC* Time series data is stored in parquet, install pyarrow
@@ -665,7 +665,6 @@ Moved most examples except core to separate git [here](https://github.com/robcar
 ## Version: 0.0.1
 
 * Basic backtesting environment with example futures data.
-
 
 
 
