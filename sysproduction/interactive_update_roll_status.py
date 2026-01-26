@@ -17,6 +17,7 @@ from syscore.interactive.display import (
     print_with_landing_strips_around,
     landing_strip,
 )
+from syscore.exceptions import ContractNotFound
 
 from sysdata.data_blob import dataBlob
 
@@ -254,9 +255,19 @@ def include_instrument_in_auto_cycle(
 
 def days_until_earliest_expiry(data: dataBlob, instrument_code: str) -> int:
     data_contracts = dataContracts(data)
-    carry_days = data_contracts.days_until_carry_expiry(instrument_code)
-    roll_days = data_contracts.days_until_roll(instrument_code)
-    price_days = data_contracts.days_until_price_expiry(instrument_code)
+    log_attrs = {"instrument_code": instrument_code, "method": "temp"}
+
+    try:
+        carry_days = data_contracts.days_until_carry_expiry(instrument_code)
+        roll_days = data_contracts.days_until_roll(instrument_code)
+        price_days = data_contracts.days_until_price_expiry(instrument_code)
+    except ContractNotFound as exc:
+        data.log.warning(
+            "Skipping %s in auto roll cycle: missing contract data (%s)"
+            % (instrument_code, exc),
+            **log_attrs,
+        )
+        return 10**9
 
     return min([carry_days, roll_days, price_days])
 
