@@ -1,4 +1,4 @@
-from syscore.exceptions import missingContract
+from syscore.exceptions import ContractNotFound, missingContract
 from syscore.constants import success
 
 from sysobjects.contract_dates_and_expiries import contractDate, expiryDate
@@ -444,7 +444,17 @@ def has_contract_expired(
 ) -> bool:
     data_contracts = dataContracts(data)
     contract = futuresContract(instrument_code, contract_id)
-    actual_contract = data_contracts.get_contract_from_db(contract)
+    log_attrs = {**contract.log_attributes(), "method": "temp"}
+
+    try:
+        actual_contract = data_contracts.get_contract_from_db(contract)
+    except ContractNotFound:
+        data.log.warning(
+            "Contract %s not found in contract db; treating as expired"
+            % str(contract),
+            **log_attrs,
+        )
+        return True
 
     return actual_contract.expired()
 
