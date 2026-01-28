@@ -98,8 +98,8 @@ def _columnwise_spearman(x: np.ndarray, y: np.ndarray) -> np.ndarray:
 
 
 def cross_sectional_ic(
-    forecast_df: pd.DataFrame, returns_df: pd.DataFrame
-) -> tuple[pd.Series, pd.Series]:
+    forecast_df: pd.DataFrame, returns_df: pd.DataFrame, spearman: bool = False
+) -> pd.Series:
     """Compute cross-sectional IC time series for forecasts vs. returns.
 
     Args:
@@ -107,8 +107,8 @@ def cross_sectional_ic(
         returns_df: Forward returns with the same structure.
 
     Returns:
-        Tuple of (pearson_ic, spearman_ic), each a Series indexed by the
-        common dates. If no column or index overlap exists, empty Series
+        pearson_ic (or spearman_ic if spearman == True), as a Series indexed by
+        the common dates. If no column or index overlap exists, empty Series
         are returned.
 
     Notes:
@@ -131,9 +131,10 @@ def cross_sectional_ic(
     returns_aligned = returns_aligned.loc[common_idx]
     x = forecast_aligned.to_numpy(dtype=float)
     y = returns_aligned.to_numpy(dtype=float)
-    pearson = pd.Series(_rowwise_pearson(x, y), index=common_idx)
-    spearman = pd.Series(_rowwise_spearman(x, y), index=common_idx)
-    return pearson, spearman
+    if spearman:
+        return pd.Series(_rowwise_spearman(x, y), index=common_idx)
+    else:
+        return pd.Series(_rowwise_pearson(x, y), index=common_idx)
 
 
 class CrossSectionalIC:

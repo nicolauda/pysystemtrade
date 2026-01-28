@@ -254,11 +254,8 @@ class systemDiag(object):
         horizon_max: int,
         scale_by_sqrt: bool = True,
         show_progress: bool = True,
-    ) -> tuple[
-        list[str],
-        dict[int, dict[str, pd.Series]],
-        dict[int, dict[str, pd.Series]],
-    ]:
+        spearman: bool = False,
+    ) -> tuple[list[str], dict[int, dict[str, pd.Series]]]:
         """Compute cross-sectional IC grids across horizons and rules.
 
         Args:
@@ -267,9 +264,10 @@ class systemDiag(object):
             horizon_max: Largest horizon in days (inclusive).
             scale_by_sqrt: If True, divide each horizon sum by sqrt(h).
             show_progress: If True, display a progress bar.
+            spearman: if True, IC is calculated with Spearman method
 
         Returns:
-            Tuple of (rules_list, IC_pearson, IC_spearman). `rules_list` is the
+            Tuple of (rules_list, IC). `rules_list` is the
             ordered list of rule names used. The IC dicts are keyed by horizon
             (int) then rule name, with Series values indexed by date.
 
@@ -288,8 +286,7 @@ class systemDiag(object):
         )
 
         rules_list = list(forecast_df_by_rule.keys())
-        IC_pearson: dict[int, dict[str, pd.Series]] = {}
-        IC_spearman: dict[int, dict[str, pd.Series]] = {}
+        ic: dict[int, dict[str, pd.Series]] = {}
 
         progress = None
         total_iterations = len(forward_returns_by_horizon) * len(rules_list)
@@ -299,17 +296,17 @@ class systemDiag(object):
             )
 
         for h, forward_ret_df in forward_returns_by_horizon.items():
-            IC_pearson[h] = {}
-            IC_spearman[h] = {}
+            ic[h] = {}
             for rule in rules_list:
-                pearson_ic, spearman_ic = CrossSectionalIC.cross_sectional_ic(
-                    forecast_df_by_rule[rule], forward_ret_df
+                information_coeff = CrossSectionalIC.cross_sectional_ic(
+                    forecast_df=forecast_df_by_rule[rule],
+                    returns_df=forward_ret_df,
+                    spearman=spearman,
                 )
-                IC_pearson[h][rule] = pearson_ic
-                IC_spearman[h][rule] = spearman_ic
+                ic[h][rule] = information_coeff
                 if progress is not None:
                     progress.iterate()
-        return (rules_list, IC_pearson, IC_spearman)
+        return (rules_list, ic)
 
     def output_config_with_estimated_parameters(
         self,
