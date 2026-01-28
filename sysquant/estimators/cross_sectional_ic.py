@@ -33,6 +33,24 @@ def _rowwise_pearson(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     return corr
 
 
+def _columnwise_pearson(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Compute Pearson correlation per column with pairwise NaN handling.
+
+    Args:
+        x: 2D array of shape (n_rows, n_cols).
+        y: 2D array of the same shape.
+
+    Returns:
+        1D array of length n_cols with Pearson correlations. Rows with
+        fewer than two finite pairs or zero variance return NaN.
+
+    Notes:
+        The computation is vectorized and uses pairwise deletion via
+        finite masks.
+    """
+    return _rowwise_pearson(x.T, y.T)
+
+
 def _rowwise_spearman(x: np.ndarray, y: np.ndarray) -> np.ndarray:
     """Compute Spearman correlation per row using rank-transformed data.
 
@@ -48,9 +66,35 @@ def _rowwise_spearman(x: np.ndarray, y: np.ndarray) -> np.ndarray:
         Ranks are computed per row with `nan_policy="omit"`, then Pearson
         correlation is applied to the ranked arrays.
     """
+    mask = np.isfinite(x) & np.isfinite(y)
     x_rank = rankdata(x, axis=1, method="average", nan_policy="omit")
     y_rank = rankdata(y, axis=1, method="average", nan_policy="omit")
+    x_rank = np.where(mask, x_rank, np.nan)
+    y_rank = np.where(mask, y_rank, np.nan)
     return _rowwise_pearson(x_rank, y_rank)
+
+
+def _columnwise_spearman(x: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Compute Spearman correlation per column using rank-transformed data.
+
+    Args:
+        x: 2D array of shape (n_rows, n_cols).
+        y: 2D array of the same shape.
+
+    Returns:
+        1D array of length n_cols with Spearman correlations. NaN handling
+        matches `_rowwise_pearson`.
+
+    Notes:
+        Ranks are computed per column with `nan_policy="omit"`, then Pearson
+        correlation is applied to the ranked arrays.
+    """
+    mask = np.isfinite(x) & np.isfinite(y)
+    x_rank = rankdata(x, axis=0, method="average", nan_policy="omit")
+    y_rank = rankdata(y, axis=0, method="average", nan_policy="omit")
+    x_rank = np.where(mask, x_rank, np.nan)
+    y_rank = np.where(mask, y_rank, np.nan)
+    return _columnwise_pearson(x_rank, y_rank)
 
 
 def cross_sectional_ic(
@@ -97,4 +141,6 @@ class CrossSectionalIC:
 
     _rowwise_pearson = staticmethod(_rowwise_pearson)
     _rowwise_spearman = staticmethod(_rowwise_spearman)
+    _columnwise_pearson = staticmethod(_columnwise_pearson)
+    _columnwise_spearman = staticmethod(_columnwise_spearman)
     cross_sectional_ic = staticmethod(cross_sectional_ic)
