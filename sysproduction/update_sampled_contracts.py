@@ -450,8 +450,7 @@ def has_contract_expired(
         actual_contract = data_contracts.get_contract_from_db(contract)
     except ContractNotFound:
         data.log.warning(
-            "Contract %s not found in contract db; treating as expired"
-            % str(contract),
+            "Contract %s not found in contract db; treating as expired" % str(contract),
             **log_attrs,
         )
         return True

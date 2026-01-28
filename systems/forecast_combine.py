@@ -1330,7 +1330,9 @@ class ForecastCombine(SystemStage):
         system = self.parent
         instrument_list = system.get_instrument_list()
         forecasts_all_instruments = (
-            system.combForecast.get_all_forecasts_for_a_list_of_instruments(instrument_list)
+            system.combForecast.get_all_forecasts_for_a_list_of_instruments(
+                instrument_list
+            )
         )
         forecast_by_instrument = {
             instrument: forecast
@@ -1340,17 +1342,17 @@ class ForecastCombine(SystemStage):
         for instrument, forecast in forecast_by_instrument.items():
             rule_variation_list = system.combForecast.get_trading_rule_list(instrument)
             for rule in rule_variation_list:
-                forecast_by_rule.setdefault(rule, {})[instrument] = forecast_by_instrument[
+                forecast_by_rule.setdefault(rule, {})[
                     instrument
-                ][rule]
+                ] = forecast_by_instrument[instrument][rule]
         return forecast_by_rule
-    
+
     @diagnostic()
-    def get_forecast_df_by_rule(self) -> pd.DataFrame:
+    def get_forecast_df_by_rule(self) -> dict[str, pd.DataFrame]:
         """Build per-rule forecast DataFrames from the system.
 
         Args:
-            system: System instance used to source forecasts.
+            system: jSystem instance used to source forecasts.
 
         Returns:
             Dict mapping rule name to a DataFrame with instruments as columns

@@ -12,7 +12,6 @@ from systems.forecast_mapping import estimate_mapping_params
 from sysquant.estimators.cross_sectional_ic import CrossSectionalIC
 
 
-
 class systemDiag(object):
     def __init__(self, system):
         self.system = system
@@ -295,7 +294,9 @@ class systemDiag(object):
         progress = None
         total_iterations = len(forward_returns_by_horizon) * len(rules_list)
         if show_progress and total_iterations > 0:
-            progress = progressBar(total_iterations, "Cross-sectional IC", show_each_time=True)
+            progress = progressBar(
+                total_iterations, "Cross-sectional IC", show_each_time=True
+            )
 
         for h, forward_ret_df in forward_returns_by_horizon.items():
             IC_pearson[h] = {}

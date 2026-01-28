@@ -100,9 +100,7 @@ class updateRollStatus:
             )
             auto_parameters.default_roll_state_if_undecided = RollState.Force
 
-        if not isinstance(
-            auto_parameters.default_roll_state_if_undecided, RollState
-        ):
+        if not isinstance(auto_parameters.default_roll_state_if_undecided, RollState):
             self.data.log.warning(
                 "Default roll state %s not recognised; using Force instead"
                 % str(auto_parameters.default_roll_state_if_undecided)
