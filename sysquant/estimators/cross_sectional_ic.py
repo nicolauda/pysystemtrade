@@ -118,14 +118,14 @@ def cross_sectional_ic(
     common_cols = forecast_df.columns.intersection(returns_df.columns)
     if common_cols.empty:
         empty = pd.Series(dtype=float)
-        return empty, empty
+        return empty
 
     forecast_aligned = forecast_df[common_cols]
     returns_aligned = returns_df[common_cols]
     common_idx = forecast_aligned.index.intersection(returns_aligned.index)
     if common_idx.empty:
         empty = pd.Series(dtype=float)
-        return empty, empty
+        return empty
 
     forecast_aligned = forecast_aligned.loc[common_idx]
     returns_aligned = returns_aligned.loc[common_idx]
@@ -140,8 +140,8 @@ def cross_sectional_ic(
 class CrossSectionalIC:
     """Namespace wrapper for cross-sectional IC helpers."""
 
-    _rowwise_pearson = staticmethod(_rowwise_pearson)
-    _rowwise_spearman = staticmethod(_rowwise_spearman)
-    _columnwise_pearson = staticmethod(_columnwise_pearson)
-    _columnwise_spearman = staticmethod(_columnwise_spearman)
+    rowwise_pearson = staticmethod(_rowwise_pearson)
+    rowwise_spearman = staticmethod(_rowwise_spearman)
+    columnwise_pearson = staticmethod(_columnwise_pearson)
+    columnwise_spearman = staticmethod(_columnwise_spearman)
     cross_sectional_ic = staticmethod(cross_sectional_ic)
