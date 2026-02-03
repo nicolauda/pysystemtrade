@@ -10,6 +10,7 @@ from syscore.dateutils import ROOT_BDAYS_INYEAR
 from syscore.interactive.progress_bar import progressBar
 from systems.forecast_mapping import estimate_mapping_params
 from sysquant.estimators.cross_sectional_ic import CrossSectionalIC
+from sysquant.estimators.forecast_persistence import ForecastPersistence
 
 
 class systemDiag(object):
@@ -307,6 +308,117 @@ class systemDiag(object):
                 if progress is not None:
                     progress.iterate()
         return (rules_list, ic)
+
+    def get_persistence_function(
+        self,
+        horizon: int = 60,
+        agg: str = "median",
+        min_obs: int = 30,
+        spearman: bool = False,
+        half_life_level: float = 0.5,
+        half_life_frac_of_rho1: float = 0.5,
+        show_progress: bool = True,
+    ) -> tuple[dict[str, pd.Series], dict[str, dict]]:
+        """
+        Compute persistence curves and half-life summaries for multiple rules.
+
+        Parameters
+        ----------
+        forecasts_by_rule : dict[str, pd.DataFrame]
+            Mapping rule_name -> forecast DataFrame (T x N),
+            index = time, columns = instruments.
+
+        horizon : int
+            Maximum lag for persistence computation.
+
+        agg : {"median", "mean"}
+            Aggregation across instruments.
+
+        min_obs : int
+            Minimum number of finite forecast pairs required per instrument.
+
+        spearman : bool
+            If True, use Spearman correlation; otherwise Pearson.
+
+        half_life_level : float
+            Absolute threshold for half-life extraction from the persistence curve.
+
+        half_life_frac_of_rho1 : float
+            Fraction of rho(1) used for relative half-life.
+
+        show_progress : bool
+            Show progress bar
+
+        Returns
+        -------
+        persistence_by_rule : dict[str, pd.Series]
+            rule -> persistence curve indexed by lag k.
+
+        summary_by_rule : dict[str, dict]
+            rule -> summary statistics with keys:
+                - "half_life_abs"
+                - "half_life_rel"
+                - "rho1"
+                - "n_lags"
+                - "method"
+                - "agg"
+        """
+        system = self.system
+        forecast_df_by_rule = system.combForecast.get_forecast_df_by_rule()
+        persistence_by_rule: dict[str, pd.Series] = {}
+        summary_by_rule: dict[str, dict] = {}
+
+        method = "spearman" if spearman else "pearson"
+
+        progress = None
+        total_iterations = len(forecast_df_by_rule)
+        if show_progress and total_iterations > 0:
+            progress = progressBar(
+                total_iterations, "Persistence function", show_each_time=True
+            )
+
+        for rule, df_forecast_for_rule in forecast_df_by_rule.items():
+            if df_forecast_for_rule is None or df_forecast_for_rule.empty:
+                persistence = pd.Series(dtype=float)
+                hl_abs = np.nan
+                hl_rel = np.nan
+            else:
+                (
+                    persistence,
+                    hl_abs,
+                    hl_rel,
+                ) = ForecastPersistence.get_persistence_function_for_rule(
+                    df_forecast_for_rule=df_forecast_for_rule,
+                    horizon=horizon,
+                    agg=agg,
+                    min_obs=min_obs,
+                    spearman=spearman,
+                    half_life_level=half_life_level,
+                    half_life_frac_of_rho1=half_life_frac_of_rho1,
+                )
+            persistence_by_rule[rule] = persistence
+
+            # rho(1): prefer lag=1 if present, else first available value
+            if persistence is not None and not persistence.empty:
+                if 1 in persistence.index:
+                    rho1 = float(persistence.loc[1])
+                else:
+                    rho1 = float(persistence.iloc[0])
+            else:
+                rho1 = np.nan
+
+            summary_by_rule[rule] = {
+                "half_life_abs": float(hl_abs) if np.isfinite(hl_abs) else np.nan,
+                "half_life_rel": float(hl_rel) if np.isfinite(hl_rel) else np.nan,
+                "rho1": rho1 if np.isfinite(rho1) else np.nan,
+                "n_lags": int(len(persistence)) if persistence is not None else 0,
+                "method": method,
+                "agg": agg,
+            }
+            if progress is not None:
+                progress.iterate()
+
+        return persistence_by_rule, summary_by_rule
 
     def output_config_with_estimated_parameters(
         self,

@@ -287,15 +287,46 @@ Example:
 from systems.diagoutput import systemDiag
 
 diag = systemDiag(system)
-rules, ic_pearson, ic_spearman = diag.get_cross_sectional_ic(
+rules, ic = diag.get_cross_sectional_ic(
     horizon_min=1,
     horizon_max=20,
     scale_by_sqrt=True,
     show_progress=True,
+    spearman=False,
 )
 ```
 
 Requirements: the system must include the `rawdata` and `combForecast` stages.
+
+### Forecast persistence diagnostics
+
+The diagnostic helper `systemDiag.get_persistence_function(...)` computes per-rule
+forecast persistence curves (correlation of each rule's forecast with its own
+future values across lags). The result is useful for assessing signal decay and
+turnover: slow-decaying rules show high persistence at longer lags.
+
+The helper also reports two half-life summaries per rule:
+- absolute level (e.g. 0.5), and
+- relative to rho(1) (e.g. 0.5 * rho(1))
+
+Example:
+
+```python
+from systems.diagoutput import systemDiag
+
+diag = systemDiag(system)
+persistence_by_rule, summary_by_rule = diag.get_persistence_function(
+    horizon=60,
+    agg="median",
+    min_obs=30,
+    spearman=False,
+    half_life_level=0.5,
+    half_life_frac_of_rho1=0.5,
+    show_progress=True,
+)
+```
+
+Requirements: the system must include the `combForecast` stage.
 
 ## How do I....See how profitable a backtest was
 
