@@ -298,6 +298,106 @@ rules, ic = diag.get_cross_sectional_ic(
 
 Requirements: the system must include the `rawdata` and `combForecast` stages.
 
+#### Diagnostics result objects (`systems/diagresults.py`)
+
+For notebook workflows it is often convenient to wrap the raw diagnostic outputs in
+lightweight "result objects" that provide:
+
+- a stable, named structure for outputs (instead of nested dicts / tuples),
+- summary tables for quick screening (mean, std, t-stats, hit-rate),
+- plotting helpers that mirror common notebook plots.
+
+The module `systems/diagresults.py` provides these wrappers:
+
+- `CrossSectionalICGridResult`: wraps `(rules_list, ic)` from `get_cross_sectional_ic`.
+- `ForecastPersistenceResult`: wraps `(persistence_by_rule, summary_by_rule)` from
+  `get_persistence_function`.
+- `RulesDiagnostics`: convenience wrapper combining IC + persistence (including
+  plots such as "IC at half-life").
+
+Plotting helpers accept `ax` / `axes` from Matplotlib; pass `None` to let the
+helpers create their own figure (so plots don't overlap), or pass a pre-created
+axes list/array to embed plots in a custom layout.
+`plot_ic_at_half_life_for_rules` falls back to the maximum available horizon when
+the persistence half-life is NaN, and marks the title accordingly.
+
+Example:
+
+```python
+from systems.diagoutput import systemDiag
+from systems.diagresults import (
+    CrossSectionalICGridResult,
+    ForecastPersistenceResult,
+    RulesDiagnostics,
+)
+
+diag = systemDiag(system)
+rules_list, ic = diag.get_cross_sectional_ic(horizon_min=1, horizon_max=20)
+persistence_by_rule, summary_by_rule = diag.get_persistence_function(horizon=60)
+
+ic_res = CrossSectionalICGridResult.from_diagoutput(
+    rules_list=rules_list,
+    ic_by_horizon=ic,
+    horizon_min=1,
+    horizon_max=20,
+)
+p_res = ForecastPersistenceResult.from_diagoutput(
+    persistence_by_rule=persistence_by_rule,
+    summary_by_rule=summary_by_rule,
+    horizon=60,
+)
+
+diags = RulesDiagnostics(ic=ic_res, persistence=p_res)
+diags.plot_rules_ic_and_persistence(smoothing_ic_half_life=126, show_ic_std=True)
+
+# The helper opens separate figures for IC-by-horizon, persistence, and IC-at-half-life.
+# If you want to overlay plots, call the underlying helpers with a shared ax.
+# The mean IC plot marks each rule's persistence half-life with a red dot when available.
+
+# Per-horizon screening table (one row per rule)
+ic_res.summary_for_horizon(20).sort_values("t_stat_hac", ascending=False).head()
+```
+
+#### IC mean t-statistics: naive vs HAC (Newey–West)
+
+When you have an IC time series for a fixed (rule, horizon), a common quick
+question is whether the *mean* IC is "significantly different from zero".
+
+The naive 1-sample t-statistic for testing `E[IC]=0` is:
+
+- let `x_t` be the IC series (after dropping NaNs), `n = len(x)`
+- `mean = x.mean()`, `std = x.std(ddof=1)`
+- `t_naive = mean / (std / sqrt(n))`
+
+This is fast and interpretable, but its key assumption is that the observations
+are effectively IID (independent, identically distributed). In trading diagnostics
+this is often *not* true:
+
+- Overlapping forward returns for horizon `h` (e.g. h-day forward returns computed
+  daily) induce serial correlation in `IC_t` roughly up to `h-1` lags.
+- Smoothing in forecasts (EWMA, filters) creates persistence in IC as well.
+- Regime changes and heteroskedasticity make variance time-varying.
+
+When there is positive autocorrelation, the naive standard error of the mean is
+too small and `t_naive` is biased upward (overstates significance).
+
+To address this, `CrossSectionalICGridResult` also reports a HAC (heteroskedasticity
+and autocorrelation consistent) t-statistic using the Newey–West estimator with
+Bartlett weights:
+
+- `t_hac = mean / sqrt( Var_HAC(mean) )`
+
+where `Var_HAC(mean)` is computed from the long-run variance estimate that
+accounts for autocovariances up to a truncation lag `L`.
+
+Default convention used in `diagresults.py`:
+
+- `L = max(0, horizon - 1)` (capped to `n-1`)
+
+This is a pragmatic default for overlapping `h`-day forward returns: the overlap
+window length implies dependence that can extend to around `h-1` lags. If your
+forward returns are non-overlapping, use a much smaller `L` (even `L=0`).
+
 ### Forecast persistence diagnostics
 
 The diagnostic helper `systemDiag.get_persistence_function(...)` computes per-rule

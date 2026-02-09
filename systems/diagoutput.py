@@ -11,6 +11,10 @@ from syscore.interactive.progress_bar import progressBar
 from systems.forecast_mapping import estimate_mapping_params
 from sysquant.estimators.cross_sectional_ic import CrossSectionalIC
 from sysquant.estimators.forecast_persistence import ForecastPersistence
+from systems.diagresults import (
+    CrossSectionalICGridResult,
+    ForecastPersistenceResult,
+)
 
 
 class systemDiag(object):
@@ -256,7 +260,7 @@ class systemDiag(object):
         scale_by_sqrt: bool = True,
         show_progress: bool = True,
         spearman: bool = False,
-    ) -> tuple[list[str], dict[int, dict[str, pd.Series]]]:
+    ) -> CrossSectionalICGridResult:
         """Compute cross-sectional IC grids across horizons and rules.
 
         Args:
@@ -307,7 +311,15 @@ class systemDiag(object):
                 ic[h][rule] = information_coeff
                 if progress is not None:
                     progress.iterate()
-        return (rules_list, ic)
+        return CrossSectionalICGridResult.from_diagoutput(
+            rules_list=rules_list,
+            ic_by_horizon=ic,
+            horizon_min=horizon_min,
+            horizon_max=horizon_max,
+            scale_by_sqrt=scale_by_sqrt,
+            show_progress=show_progress,
+            spearman=spearman,
+        )
 
     def get_persistence_function(
         self,
@@ -318,7 +330,7 @@ class systemDiag(object):
         half_life_level: float = 0.5,
         half_life_frac_of_rho1: float = 0.5,
         show_progress: bool = True,
-    ) -> tuple[dict[str, pd.Series], dict[str, dict]]:
+    ) -> ForecastPersistenceResult:
         """
         Compute persistence curves and half-life summaries for multiple rules.
 
@@ -417,8 +429,17 @@ class systemDiag(object):
             }
             if progress is not None:
                 progress.iterate()
-
-        return persistence_by_rule, summary_by_rule
+        return ForecastPersistenceResult.from_diagoutput(
+            persistence_by_rule=persistence_by_rule,
+            summary_by_rule=summary_by_rule,
+            horizon=horizon,
+            agg=agg,
+            min_obs=min_obs,
+            spearman=spearman,
+            half_life_level=half_life_level,
+            half_life_frac_of_rho1=half_life_frac_of_rho1,
+            show_progress=show_progress,
+        )
 
     def output_config_with_estimated_parameters(
         self,
