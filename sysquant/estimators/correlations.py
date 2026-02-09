@@ -1,4 +1,9 @@
 import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from matplotlib.figure import Figure
+    from matplotlib.axes import Axes
 
 from copy import copy
 from statsmodels.stats.correlation_tools import corr_nearest
@@ -44,6 +49,43 @@ class correlationEstimate(Estimate):
         columns = self.columns
 
         return pd.DataFrame(values, index=columns, columns=columns)
+
+    def display(
+        self,
+        *,
+        figsize: tuple[float, float] = (10, 8),
+        dpi: int = 120,
+        cmap: str = "RdBu",
+        vmin: float = -1.0,
+        vmax: float = 1.0,
+        rotate_xticks: int = 90,
+    ) -> tuple[Figure, Axes]:
+        """Display the correlation matrix as a heatmap.
+
+        Args:
+            figsize: Figure size in inches as `(width, height)`.
+            dpi: Figure resolution in dots per inch.
+            cmap: Matplotlib colormap name used for the heatmap.
+            vmin: Lower bound for color normalization.
+            vmax: Upper bound for color normalization.
+            rotate_xticks: Rotation angle in degrees for x-axis labels.
+
+        Returns:
+            A tuple `(fig, ax)` with the created Matplotlib figure and axes.
+        """
+        import matplotlib.pyplot as plt
+
+        corr_df = self.as_pd()
+        fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+        im = ax.imshow(corr_df.values, cmap=cmap, vmin=vmin, vmax=vmax)
+
+        ax.set_xticks(range(len(corr_df.columns)))
+        ax.set_yticks(range(len(corr_df.index)))
+        ax.set_xticklabels(corr_df.columns, rotation=rotate_xticks)
+        ax.set_yticklabels(corr_df.index)
+        fig.colorbar(im, ax=ax)
+
+        return fig, ax
 
     @classmethod
     def from_pd(correlationEstimate, pd_df: pd.DataFrame):
@@ -454,6 +496,52 @@ class CorrelationList:
             )
 
         return self.corr_list[index_of_date]
+
+    def most_recent_correlation_before_date_for_rules(
+        self,
+        rules_list: list[str] | object = arg_not_supplied,
+        relevant_date: datetime.datetime | object = arg_not_supplied,
+        strict: bool = False,
+    ) -> correlationEstimate:
+        """Return the most recent correlation matrix, optionally filtered by rules.
+
+        Args:
+            rules_list: Rules to include in the output matrix. If
+                `arg_not_supplied`, all available rules are returned.
+            relevant_date: Datetime used to select the latest fitting period up to
+                that date. If `arg_not_supplied`, the last available period is used.
+            strict: If `True`, raise when any requested rule is missing from the
+                matrix. If `False`, missing rules are ignored.
+
+        Returns:
+            A `correlationEstimate` for the selected date and rules.
+
+        Raises:
+            ValueError: If `strict=True` and at least one requested rule is missing.
+            ValueError: If no requested rules are available after filtering.
+        """
+        corr: correlationEstimate = self.most_recent_correlation_before_date(
+            relevant_date=relevant_date
+        )
+        if rules_list is arg_not_supplied:
+            return corr
+        available = list(corr.columns)
+        requested = list(dict.fromkeys(rules_list))  # de-dup maintaining order
+        missing = [r for r in requested if r not in available]
+        selected = [r for r in requested if r in available]
+        if strict and missing:
+            raise ValueError(
+                f"Requested rules not in correlation matrix: {missing}. "
+                f"Available: {available}"
+            )
+
+        if not selected:
+            raise ValueError(
+                "No valid rules selected. "
+                f"Requested: {requested}, Available: {available}"
+            )
+
+        return corr.subset(selected)
 
 
 def modify_correlation(

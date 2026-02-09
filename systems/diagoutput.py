@@ -2,19 +2,28 @@
 Suite of functions to analyse a system, and produce configuration that can be saved to a yaml file
 """
 
+import datetime
+from typing import TYPE_CHECKING, Any
+
 import yaml
 import numpy as np
 import pandas as pd
 
+from syscore.constants import arg_not_supplied
 from syscore.dateutils import ROOT_BDAYS_INYEAR
 from syscore.interactive.progress_bar import progressBar
 from systems.forecast_mapping import estimate_mapping_params
+from sysquant.estimators.correlations import CorrelationList, correlationEstimate
 from sysquant.estimators.cross_sectional_ic import CrossSectionalIC
 from sysquant.estimators.forecast_persistence import ForecastPersistence
 from systems.diagresults import (
     CrossSectionalICGridResult,
     ForecastPersistenceResult,
 )
+
+if TYPE_CHECKING:
+    from matplotlib.figure import Figure
+    from matplotlib.axes import Axes
 
 
 class systemDiag(object):
@@ -252,6 +261,113 @@ class systemDiag(object):
         )
 
         return instrument_div_multiplier
+
+    def get_forecast_correlation_matrix_before_date(
+        self,
+        relevant_date: datetime.datetime | object = arg_not_supplied,
+        instrument_list: list[str] | object = arg_not_supplied,
+        rules_list: list[str] | object = arg_not_supplied,
+        strict: bool = False,
+    ) -> correlationEstimate:
+        """Compute forecast-rule correlations before a date.
+
+        Args:
+            relevant_date: Reference datetime. If `arg_not_supplied`, use the
+                latest available matrix.
+            instrument_list: Optional instruments used to estimate pooled
+                forecast correlations. If `arg_not_supplied`, all system
+                instruments are used.
+            rules_list: Optional rule names to include in the matrix. If
+                `arg_not_supplied`, all available rules are kept.
+            strict: If `True`, raise when requested rules are missing. If
+                `False`, missing rules are ignored.
+
+        Returns:
+            A `correlationEstimate` for the selected date and rules.
+        """
+        system = self.system
+        if instrument_list is arg_not_supplied:
+            instrument_list = system.get_instrument_list()
+
+        corr_list: CorrelationList = (
+            system.combForecast.get_forecast_correlation_matrices_from_instrument_code_list(
+                instrument_list
+            )
+        )
+        corr: correlationEstimate = corr_list.most_recent_correlation_before_date_for_rules(
+            relevant_date=relevant_date,
+            rules_list=rules_list,
+            strict=strict,
+        )
+
+        return corr
+
+    def get_forecast_correlation_matrix_df_before_date(
+        self,
+        relevant_date: datetime.datetime | object = arg_not_supplied,
+        instrument_list: list[str] | object = arg_not_supplied,
+        rules_list: list[str] | object = arg_not_supplied,
+        strict: bool = False,
+    ) -> pd.DataFrame:
+        """Return forecast-rule correlations as a DataFrame.
+
+        Args:
+            relevant_date: Reference datetime. If `arg_not_supplied`, use the
+                latest available matrix.
+            instrument_list: Optional instruments used to estimate pooled
+                forecast correlations. If `arg_not_supplied`, all system
+                instruments are used.
+            rules_list: Optional rule names to include in the matrix. If
+                `arg_not_supplied`, all available rules are kept.
+            strict: If `True`, raise when requested rules are missing. If
+                `False`, missing rules are ignored.
+
+        Returns:
+            A square `pd.DataFrame` indexed and columned by rule name.
+        """
+        corr: correlationEstimate = self.get_forecast_correlation_matrix_before_date(
+            relevant_date=relevant_date,
+            instrument_list=instrument_list,
+            rules_list=rules_list,
+            strict=strict,
+        )
+
+        return corr.as_pd()
+
+    def display_forecast_correlation_matrix_before_date(
+        self,
+        relevant_date: datetime.datetime | object = arg_not_supplied,
+        instrument_list: list[str] | object = arg_not_supplied,
+        rules_list: list[str] | object = arg_not_supplied,
+        strict: bool = False,
+        **display_kwargs: Any,
+    ) -> tuple["Figure", "Axes"]:
+        """Display forecast-rule correlations as a heatmap.
+
+        Args:
+            relevant_date: Reference datetime. If `arg_not_supplied`, use the
+                latest available matrix.
+            instrument_list: Optional instruments used to estimate pooled
+                forecast correlations. If `arg_not_supplied`, all system
+                instruments are used.
+            rules_list: Optional rule names to include in the matrix. If
+                `arg_not_supplied`, all available rules are kept.
+            strict: If `True`, raise when requested rules are missing. If
+                `False`, missing rules are ignored.
+            **display_kwargs: Extra keyword arguments forwarded to
+                `correlationEstimate.display(...)`.
+
+        Returns:
+            A tuple `(fig, ax)` with the created Matplotlib figure and axes.
+        """
+        corr: correlationEstimate = self.get_forecast_correlation_matrix_before_date(
+            relevant_date=relevant_date,
+            instrument_list=instrument_list,
+            rules_list=rules_list,
+            strict=strict,
+        )
+
+        return corr.display(**display_kwargs)
 
     def get_cross_sectional_ic(
         self,

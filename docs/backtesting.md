@@ -298,6 +298,32 @@ rules, ic = diag.get_cross_sectional_ic(
 
 Requirements: the system must include the `rawdata` and `combForecast` stages.
 
+### Forecast correlation matrix diagnostics
+
+`systemDiag` also exposes helpers for forecast-rule correlation matrices estimated
+by `combForecast`:
+
+- `get_forecast_correlation_matrix_before_date(...)`: returns a
+  `correlationEstimate`.
+- `get_forecast_correlation_matrix_df_before_date(...)`: returns the same matrix
+  as a `pd.DataFrame`.
+- `display_forecast_correlation_matrix_before_date(...)`: renders a heatmap using
+  `correlationEstimate.display(...)`.
+
+Example:
+
+```python
+from systems.diagoutput import systemDiag
+
+diag = systemDiag(system)
+fig, ax = diag.display_forecast_correlation_matrix_before_date(
+    rules_list=["breakout10", "breakout20", "breakout40"],
+    strict=False,
+    figsize=(12, 10),
+    dpi=150,
+)
+```
+
 #### Diagnostics result objects (`systems/diagresults.py`)
 
 For notebook workflows it is often convenient to wrap the raw diagnostic outputs in
