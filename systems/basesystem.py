@@ -158,7 +158,7 @@ class System(object):
         remove_short_history=False,
         days_required=750,
         force_to_passed_list=arg_not_supplied,
-    ) -> list:
+    ) -> list[str]:
         """
         Get the instrument list
 
