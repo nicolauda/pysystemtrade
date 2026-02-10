@@ -308,7 +308,7 @@ by `combForecast`:
 - `get_forecast_correlation_matrix_df_before_date(...)`: returns the same matrix
   as a `pd.DataFrame`.
 - `display_forecast_correlation_matrix_before_date(...)`: renders a heatmap using
-  `correlationEstimate.display(...)`.
+  `correlationEstimate.display(...)` and returns `(fig, ax)` for customization.
 
 Example:
 
