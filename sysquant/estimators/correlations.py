@@ -59,7 +59,7 @@ class correlationEstimate(Estimate):
         vmin: float = -1.0,
         vmax: float = 1.0,
         rotate_xticks: int = 90,
-    ) -> tuple[Figure, Axes]:
+    ) -> tuple["Figure", "Axes"]:
         """Display the correlation matrix as a heatmap.
 
         Args:
