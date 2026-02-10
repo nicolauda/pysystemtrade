@@ -8,14 +8,30 @@ import pandas as pd
 
 
 def _as_tuple_str(values: Any) -> tuple[str, ...]:
-    """Coerce an iterable of values into a tuple of strings."""
+    """Convert an iterable of values into a tuple of strings.
+
+    Args:
+        values: Iterable-like container to convert. If `None`, an empty tuple
+            is returned.
+
+    Returns:
+        Tuple with each input element converted via `str(...)`.
+    """
     if values is None:
         return ()
     return tuple(str(v) for v in values)
 
 
 def _safe_float(value: Any) -> float:
-    """Best-effort float conversion returning NaN for non-finite/unparseable."""
+    """Safely convert a value to a finite float.
+
+    Args:
+        value: Object to convert to `float`.
+
+    Returns:
+        Finite float value, or `NaN` if conversion fails or the converted value
+        is not finite.
+    """
     try:
         x = float(value)
     except (TypeError, ValueError):
@@ -24,7 +40,16 @@ def _safe_float(value: Any) -> float:
 
 
 def _t_stat_1samp_zero(x: pd.Series) -> float:
-    """Compute a simple 1-sample t-stat for mean(x) vs 0 with NaN handling."""
+    """Compute a naive one-sample t-statistic for mean(x) against zero.
+
+    Args:
+        x: Input series. Non-numeric values are coerced to `NaN` and dropped.
+
+    Returns:
+        IID t-statistic for the sample mean, or `NaN` if fewer than two valid
+        observations are available or if the sample standard deviation is not
+        usable.
+    """
     vals = pd.to_numeric(x, errors="coerce").dropna().to_numpy(dtype=float)
     n = int(vals.size)
     if n < 2:
@@ -37,7 +62,7 @@ def _t_stat_1samp_zero(x: pd.Series) -> float:
 
 
 def _t_stat_hac_zero(x: pd.Series, *, lags: int) -> float:
-    """Compute a Newey–West (HAC) t-stat for mean(x) vs 0.
+    """Compute a Newey-West (HAC) t-statistic for mean(x) against zero.
 
     This is a heteroskedasticity- and autocorrelation-consistent (HAC) variant
     of the naive 1-sample t-stat for time-series data. It replaces the IID
@@ -50,7 +75,7 @@ def _t_stat_hac_zero(x: pd.Series, *, lags: int) -> float:
             back to the naive t-stat.
 
     Returns:
-        HAC-adjusted t-stat, or NaN if insufficient data.
+        HAC-adjusted t-statistic, or `NaN` if insufficient data are available.
     """
     if lags <= 0:
         return _t_stat_1samp_zero(x)
@@ -85,7 +110,15 @@ def _t_stat_hac_zero(x: pd.Series, *, lags: int) -> float:
 
 
 def _hitrate_positive(x: pd.Series) -> float:
-    """Fraction of finite observations strictly greater than 0 (NaN -> ignored)."""
+    """Compute the fraction of positive observations.
+
+    Args:
+        x: Input series. Non-numeric values are coerced to `NaN` and ignored.
+
+    Returns:
+        Ratio of finite observations strictly greater than zero, or `NaN` when
+        no finite values are available.
+    """
     vals = pd.to_numeric(x, errors="coerce").dropna().to_numpy(dtype=float)
     if vals.size == 0:
         return float("nan")
@@ -94,10 +127,15 @@ def _hitrate_positive(x: pd.Series) -> float:
 
 @dataclass(frozen=True, slots=True)
 class CrossSectionalICGridResult:
-    """Cross-sectional IC results over a horizon x rule grid.
+    """Container for cross-sectional IC results on a horizon-by-rule grid.
 
-    This wraps the raw output of `systemDiag.get_cross_sectional_ic`:
-    `ic[horizon][rule] -> pd.Series(date -> IC)`.
+    Wraps the raw output of `systemDiag.get_cross_sectional_ic`:
+    `ic_by_horizon[horizon][rule] -> pd.Series(index=date, value=ic)`.
+
+    Attributes:
+        rules: Preferred rule ordering used by summaries and plots.
+        ic_by_horizon: Nested horizon/rule mapping to IC time series.
+        metadata: Optional user-provided metadata.
     """
 
     rules: tuple[str, ...]
@@ -111,7 +149,16 @@ class CrossSectionalICGridResult:
         ic_by_horizon: dict[int, dict[str, pd.Series]],
         **metadata: Any,
     ) -> "CrossSectionalICGridResult":
-        """Build from the raw `(rules_list, ic_by_horizon)` diagoutput return."""
+        """Build an instance from raw `systemDiag.get_cross_sectional_ic` output.
+
+        Args:
+            rules_list: Rule names in the preferred display order.
+            ic_by_horizon: Nested horizon/rule mapping to IC series.
+            **metadata: Optional metadata fields to store with the result.
+
+        Returns:
+            Initialized `CrossSectionalICGridResult`.
+        """
         return cls(
             rules=_as_tuple_str(rules_list),
             ic_by_horizon=dict(ic_by_horizon),
@@ -120,14 +167,22 @@ class CrossSectionalICGridResult:
 
     @property
     def horizons(self) -> tuple[int, ...]:
-        """Sorted available horizons."""
+        """Return available horizons sorted in ascending order."""
         try:
             return tuple(sorted(int(h) for h in self.ic_by_horizon.keys()))
         except Exception:
             return tuple(self.ic_by_horizon.keys())
 
     def nearest_horizon(self, target: float) -> int | None:
-        """Return the available horizon closest to `target`, or None if missing."""
+        """Return the available horizon closest to a target value.
+
+        Args:
+            target: Desired horizon value.
+
+        Returns:
+            Closest available horizon, or `None` if no horizons are available or
+            `target` is not finite.
+        """
         horizons = self.horizons
         if len(horizons) == 0:
             return None
@@ -137,25 +192,45 @@ class CrossSectionalICGridResult:
         return min(horizons, key=lambda h: abs(float(h) - target_f))
 
     def ic_series(self, *, horizon: int, rule: str) -> pd.Series:
-        """Return the IC time series for a single (horizon, rule) pair."""
+        """Return the IC series for one `(horizon, rule)` pair.
+
+        Args:
+            horizon: Forward-return horizon in days.
+            rule: Rule name.
+
+        Returns:
+            Matching IC series. Returns an empty float series when the pair is
+            not present in the result.
+        """
         series = self.ic_by_horizon.get(int(horizon), {}).get(str(rule))
         if series is None:
             return pd.Series(dtype=float)
         return series
 
     def t_stat_naive(self, *, horizon: int, rule: str) -> float:
-        """Naive (IID) t-stat for the IC mean at a given (horizon, rule)."""
+        """Compute the naive IID t-statistic of mean IC for one pair.
+
+        Args:
+            horizon: Forward-return horizon in days.
+            rule: Rule name.
+
+        Returns:
+            One-sample IID t-statistic of the IC mean, or `NaN` if unavailable.
+        """
         s = self.ic_series(horizon=horizon, rule=rule)
         return _t_stat_1samp_zero(s)
 
     def t_stat_hac(self, *, horizon: int, rule: str, lags: int | None = None) -> float:
-        """HAC (Newey–West) t-stat for the IC mean at a given (horizon, rule).
+        """Compute the HAC (Newey-West) t-statistic of mean IC for one pair.
 
         Args:
             horizon: Forward-return horizon (days) used to compute IC.
             rule: Trading rule name.
             lags: Newey–West truncation lag. If None, uses the convention
                 `max(0, horizon - 1)` and caps it to the available sample size.
+
+        Returns:
+            HAC-adjusted t-statistic, or `NaN` if unavailable.
         """
         s = self.ic_series(horizon=horizon, rule=rule)
         n_obs = int(pd.to_numeric(s, errors="coerce").dropna().shape[0])
@@ -169,7 +244,16 @@ class CrossSectionalICGridResult:
     def ic_frame_for_horizon(
         self, horizon: int, *, rules: list[str] | None = None
     ) -> pd.DataFrame:
-        """Return a DataFrame of IC series for one horizon (columns = rules)."""
+        """Build a per-horizon IC frame with one column per rule.
+
+        Args:
+            horizon: Forward-return horizon in days.
+            rules: Optional subset/order of rules. If omitted, uses `self.rules`.
+
+        Returns:
+            DataFrame indexed by date with rules as columns. Returns an empty
+            DataFrame when no rules are requested.
+        """
         rules_use = _as_tuple_str(rules) if rules is not None else self.rules
         data = {rule: self.ic_series(horizon=horizon, rule=rule) for rule in rules_use}
         if len(data) == 0:
@@ -177,7 +261,15 @@ class CrossSectionalICGridResult:
         return pd.DataFrame(data).sort_index()
 
     def mean_ic_by_horizon(self, *, rules: list[str] | None = None) -> pd.DataFrame:
-        """Return mean IC per (horizon, rule). Index = horizon."""
+        """Compute mean IC by horizon for each rule.
+
+        Args:
+            rules: Optional subset/order of rules. If omitted, uses `self.rules`.
+
+        Returns:
+            DataFrame indexed by horizon with one column per rule containing
+            `mean(IC)`. Returns an empty DataFrame when no rows are available.
+        """
         rules_use = _as_tuple_str(rules) if rules is not None else self.rules
         rows: list[dict[str, Any]] = []
         for h in self.horizons:
@@ -193,7 +285,16 @@ class CrossSectionalICGridResult:
         return df
 
     def std_ic_by_horizon(self, *, rules: list[str] | None = None) -> pd.DataFrame:
-        """Return IC std dev per (horizon, rule). Index = horizon."""
+        """Compute IC standard deviation by horizon for each rule.
+
+        Args:
+            rules: Optional subset/order of rules. If omitted, uses `self.rules`.
+
+        Returns:
+            DataFrame indexed by horizon with one column per rule containing
+            sample standard deviation (`ddof=1`). Returns an empty DataFrame
+            when no rows are available.
+        """
         rules_use = _as_tuple_str(rules) if rules is not None else self.rules
         rows: list[dict[str, Any]] = []
         for h in self.horizons:
@@ -209,16 +310,24 @@ class CrossSectionalICGridResult:
         return df
 
     def summary_for_horizon(self, horizon: int) -> pd.DataFrame:
-        """Per-rule summary for a single horizon.
+        """Build a per-rule summary table for a single horizon.
 
         Includes two t-stats for the IC mean:
         - `t_stat_naive`: assumes IID observations.
-        - `t_stat_hac`: Newey–West (HAC) adjusted, using the convention
+        - `t_stat_hac`: Newey-West (HAC) adjusted, using the convention
           `hac_lags = max(0, horizon - 1)` capped to the available sample size.
 
         The `horizon - 1` choice is a pragmatic default when the forward returns
         used to compute IC are overlapping h-day returns (common in daily data),
         which typically induces autocorrelation up to roughly h-1 lags.
+
+        Args:
+            horizon: Forward-return horizon in days.
+
+        Returns:
+            DataFrame indexed by rule with columns:
+            `mean`, `std`, `t_stat_naive`, `t_stat_hac`, `hac_lags`, `n_obs`,
+            and `hitrate_pos`.
         """
         rows: list[dict[str, Any]] = []
         for rule in self.rules:
@@ -252,7 +361,17 @@ class CrossSectionalICGridResult:
         title: str | None = None,
     ):
         """Plot mean IC by horizon for each rule.
+
         Mirrors the notebook helper used in `strategy_builder/workbench.ipynb`.
+
+        Args:
+            rules: Optional subset/order of rules. If omitted, uses `self.rules`.
+            show_std: If `True`, draws a +/- one-standard-deviation band.
+            ax: Optional Matplotlib axis. If `None`, a new figure/axis is created.
+            title: Optional plot title.
+
+        Returns:
+            Matplotlib axis with the plot.
         """
         import matplotlib.pyplot as plt
 
@@ -293,11 +412,16 @@ class CrossSectionalICGridResult:
 
 @dataclass(frozen=True, slots=True)
 class ForecastPersistenceResult:
-    """Forecast persistence results for multiple rules.
+    """Container for forecast persistence diagnostics across rules.
 
     Wraps the raw output of `systemDiag.get_persistence_function`:
     `persistence_by_rule[rule] -> pd.Series(lag -> rho)`,
     `summary_by_rule[rule] -> dict` (half_life_abs, half_life_rel, rho1, ...).
+
+    Attributes:
+        persistence_by_rule: Per-rule persistence function (`lag -> rho`).
+        summary_by_rule: Per-rule summary metrics.
+        metadata: Optional user-provided metadata.
     """
 
     persistence_by_rule: dict[str, pd.Series]
@@ -311,7 +435,16 @@ class ForecastPersistenceResult:
         summary_by_rule: dict[str, dict[str, Any]],
         **metadata: Any,
     ) -> "ForecastPersistenceResult":
-        """Build from the raw `(persistence_by_rule, summary_by_rule)` return."""
+        """Build an instance from raw persistence diagnostics output.
+
+        Args:
+            persistence_by_rule: Mapping of rule name to persistence curve.
+            summary_by_rule: Mapping of rule name to summary metrics.
+            **metadata: Optional metadata fields to store with the result.
+
+        Returns:
+            Initialized `ForecastPersistenceResult`.
+        """
         return cls(
             persistence_by_rule=dict(persistence_by_rule),
             summary_by_rule=dict(summary_by_rule),
@@ -320,22 +453,43 @@ class ForecastPersistenceResult:
 
     @property
     def rules(self) -> tuple[str, ...]:
-        """Sorted rule names present in the result."""
+        """Return rule names sorted alphabetically."""
         return tuple(sorted(self.persistence_by_rule.keys()))
 
     def persistence_series(self, rule: str) -> pd.Series:
-        """Return the persistence curve for a single rule (index = lag)."""
+        """Return the persistence curve for a single rule.
+
+        Args:
+            rule: Rule name.
+
+        Returns:
+            Persistence curve indexed by lag. Returns an empty float series when
+            the rule is not present.
+        """
         series = self.persistence_by_rule.get(str(rule))
         if series is None:
             return pd.Series(dtype=float)
         return series
 
     def half_life_abs(self, rule: str) -> float:
-        """Absolute half-life (first crossing of `half_life_level`) for a rule."""
+        """Return the absolute half-life metric for a rule.
+
+        Args:
+            rule: Rule name.
+
+        Returns:
+            Absolute half-life value (`half_life_abs`) as a finite float when
+            available, otherwise `NaN`.
+        """
         return _safe_float(self.summary_by_rule.get(str(rule), {}).get("half_life_abs"))
 
     def summary_table(self) -> pd.DataFrame:
-        """Return the per-rule persistence summary as a DataFrame."""
+        """Build a table with persistence summary metrics for all rules.
+
+        Returns:
+            DataFrame indexed by rule with summary metrics as columns. Returns
+            an empty DataFrame when no summary data are available.
+        """
         if not self.summary_by_rule:
             return pd.DataFrame()
         df = pd.DataFrame(self.summary_by_rule).T
@@ -343,7 +497,15 @@ class ForecastPersistenceResult:
         return df.sort_index()
 
     def persistence_frame(self, *, rules: list[str] | None = None) -> pd.DataFrame:
-        """Return a DataFrame of persistence curves (columns = rules)."""
+        """Build a persistence DataFrame with one column per rule.
+
+        Args:
+            rules: Optional subset/order of rules. If omitted, uses all rules.
+
+        Returns:
+            DataFrame indexed by lag with rule columns. Returns an empty
+            DataFrame when no rules are requested.
+        """
         rules_use = _as_tuple_str(rules) if rules is not None else self.rules
         data = {rule: self.persistence_series(rule) for rule in rules_use}
         if len(data) == 0:
@@ -357,9 +519,17 @@ class ForecastPersistenceResult:
         ax=None,
         title: str | None = None,
     ):
-        """Plot persistence curves for rules and annotate half-life on the x-axis.
+        """Plot persistence curves and annotate half-life on the x-axis.
 
         Mirrors the notebook helper used in `strategy_builder/workbench.ipynb`.
+
+        Args:
+            rules: Optional subset/order of rules. If omitted, uses all rules.
+            ax: Optional Matplotlib axis. If `None`, a new figure/axis is created.
+            title: Optional plot title.
+
+        Returns:
+            Matplotlib axis with the plot.
         """
         import matplotlib.pyplot as plt
 
@@ -392,7 +562,15 @@ class ForecastPersistenceResult:
 
 @dataclass(frozen=True, slots=True)
 class RuleDiagnostics:
-    """Joined IC + persistence diagnostics for a single rule."""
+    """Combined IC and persistence diagnostics for one rule.
+
+    Attributes:
+        rule: Rule identifier.
+        ic_by_horizon: IC series keyed by horizon.
+        persistence: Persistence curve (`lag -> rho`).
+        persistence_summary: Persistence summary metrics for the rule.
+        metadata: Optional user-provided metadata.
+    """
 
     rule: str
     ic_by_horizon: dict[int, pd.Series]
@@ -401,13 +579,27 @@ class RuleDiagnostics:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def half_life_abs(self) -> float:
-        """Absolute half-life for this rule's persistence curve."""
+        """Return the absolute half-life of this rule.
+
+        Returns:
+            Absolute half-life value (`half_life_abs`) as a finite float when
+            available, otherwise `NaN`.
+        """
         return _safe_float(self.persistence_summary.get("half_life_abs"))
 
 
 @dataclass(frozen=True, slots=True)
 class RulesDiagnostics:
-    """Convenience wrapper used by notebooks to plot IC + persistence separately."""
+    """Top-level wrapper joining IC and persistence diagnostics.
+
+    Handy in notebooks, but safe to use in scripts as well. Plotting helpers
+    require matplotlib (and an appropriate backend in non-interactive runs).
+
+    Attributes:
+        ic: Cross-sectional IC diagnostics.
+        persistence: Forecast persistence diagnostics.
+        metadata: Optional user-provided metadata.
+    """
 
     ic: CrossSectionalICGridResult
     persistence: ForecastPersistenceResult
@@ -425,7 +617,21 @@ class RulesDiagnostics:
         persistence_metadata: dict[str, Any] | None = None,
         **metadata: Any,
     ) -> "RulesDiagnostics":
-        """Build a combined diagnostics object from raw IC + persistence outputs."""
+        """Build a combined diagnostics object from raw IC and persistence outputs.
+
+        Args:
+            rules_list: Rule names in preferred display order.
+            ic_by_horizon: Raw IC data (`horizon -> rule -> series`).
+            persistence_by_rule: Raw persistence curves by rule.
+            summary_by_rule: Raw persistence summaries by rule.
+            ic_metadata: Optional metadata passed to the IC result object.
+            persistence_metadata: Optional metadata passed to the persistence
+                result object.
+            **metadata: Optional metadata attached to the combined object.
+
+        Returns:
+            Initialized `RulesDiagnostics`.
+        """
         ic_res = CrossSectionalICGridResult.from_diagoutput(
             rules_list=rules_list,
             ic_by_horizon=ic_by_horizon,
@@ -440,13 +646,26 @@ class RulesDiagnostics:
 
     @property
     def rules(self) -> tuple[str, ...]:
-        """Preferred rule order (IC order if present, else persistence order)."""
+        """Return preferred rule order.
+
+        Returns:
+            Rule order from IC diagnostics when available, otherwise the order
+            from persistence diagnostics.
+        """
         if self.ic.rules:
             return self.ic.rules
         return self.persistence.rules
 
     def rule_diagnostics(self, rule: str) -> RuleDiagnostics:
-        """Return a per-rule view containing IC-by-horizon and persistence info."""
+        """Return the combined diagnostics view for a single rule.
+
+        Args:
+            rule: Rule name.
+
+        Returns:
+            `RuleDiagnostics` with IC-by-horizon series and persistence data for
+            the requested rule.
+        """
         ic_by_horizon = {
             h: self.ic.ic_series(horizon=h, rule=rule) for h in self.ic.horizons
         }
@@ -467,11 +686,21 @@ class RulesDiagnostics:
         axes=None,
         title: str | None = None,
     ):
-        """Plot IC series at each rule's half-life horizon (raw + rolling mean).
+        """Plot IC series at each rule's half-life horizon.
 
         For each rule, picks the available IC horizon closest to the estimated
         persistence half-life, then plots the IC time series at that horizon.
         If the half-life is NaN, it falls back to the maximum available horizon.
+
+        Args:
+            rules: Optional subset/order of rules. If omitted, uses all rules.
+            smoothing: Rolling window length used for the moving-average line.
+                Values <= 1 disable smoothing.
+            axes: Optional pre-created Matplotlib axis or axes collection.
+            title: Optional shared title shown on the first axis.
+
+        Returns:
+            Tuple `(fig, axes)`. `fig` is `None` when external axes are passed.
         """
         import matplotlib.pyplot as plt
 
@@ -539,10 +768,18 @@ class RulesDiagnostics:
         smoothing_ic_half_life: int = 60,
         show_ic_std: bool = False,
     ) -> None:
-        """Notebook-friendly wrapper for mean-IC, persistence, and IC-at-half-life plots.
+        """Plot IC, persistence, and IC-at-half-life diagnostics.
 
         Mean IC plots include a red marker at each rule's persistence half-life
         when that value is available.
+
+        Args:
+            rules: Optional subset/order of rules. If omitted, uses all rules.
+            plot_ic: If `True`, plots mean IC by horizon.
+            plot_persistence: If `True`, plots persistence curves.
+            plot_ic_half_life: If `True`, plots IC series at half-life horizons.
+            smoothing_ic_half_life: Rolling window for IC-at-half-life smoothing.
+            show_ic_std: If `True`, mean IC plot includes +/- std shading.
         """
         import matplotlib.pyplot as plt
 
@@ -576,7 +813,13 @@ class RulesDiagnostics:
         mean_df: pd.DataFrame,
         ax,
     ) -> None:
-        """Plot red dots at each rule's persistence half-life on mean IC plots."""
+        """Overlay red half-life markers on an existing mean-IC plot.
+
+        Args:
+            rules: Rules to consider for marker placement.
+            mean_df: DataFrame from `mean_ic_by_horizon` (index=horizon).
+            ax: Matplotlib axis where markers are added.
+        """
         if mean_df.empty:
             return
         mean_index = mean_df.index
