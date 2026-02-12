@@ -1982,6 +1982,11 @@ default_roll_state_if_undecided: 'Ask'
 auto_roll_expired: True
 ```
 
+`default_roll_state_if_undecided` accepts `Ask` or any roll-state name
+(`No_Roll`, `Passive`, `Force`, `Force_Outright`, `Roll_Adjusted`, `Close`,
+`No_Open`). In interactive auto modes, valid names are normalised to
+`RollState` values before writing state changes.
+
 When the same logic runs non-interactively (for example via `run_update_roll_status`
 in a scheduled task) any situation that would normally ask you to choose a roll
 state falls back to `Force` automatically so the process cannot hang waiting for
@@ -3405,12 +3410,12 @@ medium_speed_TF_carry            US10            1            3                 
                                   OAT           30           11                        0                        11 3 days 05:56:21.616143
 
 
-"Notice where we have a position we report on the limit, even if none is set.
-In this case I've set instrument level, but not strategy/instrument position limits"
+"Position limits are shown in two separate tables: first at strategy/instrument
+level, then as instrument-level aggregates across strategies."
 
-=====================================================
-              Status of position limits              
-=====================================================
+======================================================================
+          Status of position limits (strategy/instrument)             
+======================================================================
 
                              keys  position pos_limit
 0    medium_speed_TF_carry/GAS_US      -1.0  no limit
@@ -3421,16 +3426,22 @@ In this case I've set instrument level, but not strategy/instrument position lim
 
 12      medium_speed_TF_carry/BTP       3.0  no limit
 13      medium_speed_TF_carry/MXP       4.0  no limit
-0                             V2X      -5.0        35
-1                             BTP       3.0        10
-2                         LEANHOG       0.0         8
+
+==================================================================
+          Status of position limits (instrument aggregate)         
+==================================================================
+
+        keys  position  pos_limit
+0        V2X      -5.0         35
+1        BTP       3.0         10
+2    LEANHOG       0.0          8
 
 "....truncated for space...."
 
-34                           US10       0.0        16
-35                        LIVECOW       0.0        11
-36                        EDOLLAR      11.0        86
-37                            US5       0.0        39
+34      US10       0.0         16
+35   LIVECOW       0.0         11
+36   EDOLLAR      11.0         86
+37       US5       0.0         39
 
 
 "Overrides allow us to reduce or eliminate positions temporarily in specific
