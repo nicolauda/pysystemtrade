@@ -278,11 +278,55 @@ class autoRollParameters:
     min_relative_volume: float
     min_absolute_volume: float
     near_expiry_days: int
-    default_roll_state_if_undecided: RollState
+    default_roll_state_if_undecided: RollState | str
     auto_roll_expired: bool
 
 
 ASK_FOR_STATE = "Ask"
+
+
+def normalise_default_roll_state_if_undecided(
+    default_roll_state_if_undecided: RollState | str,
+) -> RollState | str:
+    """Normalise default auto-roll fallback to a `RollState` or `Ask`.
+
+    Args:
+        default_roll_state_if_undecided: Raw value from config/user input.
+            Expected values are `Ask` or one of the `RollState` names.
+
+    Returns:
+        A `RollState` when a concrete state is provided, otherwise `Ask`.
+
+    Raises:
+        ValueError: If the input is not `Ask` and does not match any
+            `RollState` name.
+    """
+
+    if isinstance(default_roll_state_if_undecided, RollState):
+        return default_roll_state_if_undecided
+
+    if not isinstance(default_roll_state_if_undecided, str):
+        raise ValueError(
+            "Invalid default roll state value %s (type %s). Expected one of %s"
+            % (
+                str(default_roll_state_if_undecided),
+                type(default_roll_state_if_undecided).__name__,
+                str(list_of_all_roll_states + [ASK_FOR_STATE]),
+            )
+        )
+
+    candidate = default_roll_state_if_undecided.strip()
+    if candidate.lower() == ASK_FOR_STATE.lower():
+        return ASK_FOR_STATE
+
+    for roll_state in RollState:
+        if roll_state.name.lower() == candidate.lower():
+            return roll_state
+
+    raise ValueError(
+        "Invalid default roll state '%s'. Expected one of %s"
+        % (candidate, str(list_of_all_roll_states + [ASK_FOR_STATE]))
+    )
 
 
 def get_auto_roll_parameters(data: dataBlob) -> autoRollParameters:
@@ -357,6 +401,17 @@ def get_auto_roll_parameters_potentially_using_default(
             "Automatically roll adjusted prices when a priced contract has expired and no position?"
         )
 
+    try:
+        default_roll_state_if_undecided = normalise_default_roll_state_if_undecided(
+            default_roll_state_if_undecided
+        )
+    except ValueError as exc:
+        data.log.warning(
+            "%s. Falling back to %s." % (str(exc), ASK_FOR_STATE),
+            method="temp",
+        )
+        default_roll_state_if_undecided = ASK_FOR_STATE
+
     auto_parameters = autoRollParameters(
         min_absolute_volume=min_absolute_volume,
         min_relative_volume=min_relative_volume,
@@ -410,9 +465,10 @@ def describe_action_for_default_roll_state_if_undecided(
     if auto_parameters.default_roll_state_if_undecided == ASK_FOR_STATE:
         return "We will prompt user for required roll state"
     else:
-        return "Roll state will be set to %s automatically" % str(
-            auto_parameters.default_roll_state_if_undecided
-        )
+        default_roll_state = auto_parameters.default_roll_state_if_undecided
+        if isinstance(default_roll_state, RollState):
+            default_roll_state = default_roll_state.name
+        return "Roll state will be set to %s automatically" % str(default_roll_state)
 
 
 def describe_action_for_auto_roll_expired(
