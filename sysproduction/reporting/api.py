@@ -85,6 +85,8 @@ from sysproduction.reporting.data.status import (
     get_last_price_updates_as_df,
     get_last_optimal_position_updates_as_df,
     get_list_of_position_locks,
+    get_strategy_position_limits_as_df,
+    get_instrument_position_limits_as_df,
     get_position_limits_as_df,
 )
 from sysproduction.reporting.data.volume import get_liquidity_data_df
@@ -542,6 +544,22 @@ class reportingApi(object):
     def table_of_position_limits(self):
         position_limits = get_position_limits_as_df(self.data)
         position_limits_table = table("Status of position limits", position_limits)
+
+        return position_limits_table
+
+    def table_of_strategy_position_limits(self):
+        position_limits = get_strategy_position_limits_as_df(self.data)
+        position_limits_table = table(
+            "Status of position limits (strategy/instrument)", position_limits
+        )
+
+        return position_limits_table
+
+    def table_of_instrument_position_limits(self):
+        position_limits = get_instrument_position_limits_as_df(self.data)
+        position_limits_table = table(
+            "Status of position limits (instrument aggregate)", position_limits
+        )
 
         return position_limits_table
 

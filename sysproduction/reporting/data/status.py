@@ -370,21 +370,32 @@ def get_list_of_position_locks(data):
 
 
 def get_position_limits_as_df(data):
-    strat_instrument_limits_as_df = get_strategy_instrument_limits_as_df(data)
-    strat_instrument_limits_as_df = strat_instrument_limits_as_df.sort_values(
-        "spare", ascending=True
-    )
-
-    instrument_limits_as_df = get_instrument_limits_as_df(data)
-    instrument_limits_as_df = instrument_limits_as_df.sort_values(
-        "spare", ascending=True
-    )
+    strat_instrument_limits_as_df = get_strategy_position_limits_as_df(data)
+    instrument_limits_as_df = get_instrument_position_limits_as_df(data)
 
     agg_limits = pd.concat(
         [strat_instrument_limits_as_df, instrument_limits_as_df], axis=0
     )
 
     return agg_limits
+
+
+def get_strategy_position_limits_as_df(data):
+    strat_instrument_limits_as_df = get_strategy_instrument_limits_as_df(data)
+    strat_instrument_limits_as_df = strat_instrument_limits_as_df.sort_values(
+        "spare", ascending=True
+    )
+
+    return strat_instrument_limits_as_df
+
+
+def get_instrument_position_limits_as_df(data):
+    instrument_limits_as_df = get_instrument_limits_as_df(data)
+    instrument_limits_as_df = instrument_limits_as_df.sort_values(
+        "spare", ascending=True
+    )
+
+    return instrument_limits_as_df
 
 
 def get_strategy_instrument_limits_as_df(data):
