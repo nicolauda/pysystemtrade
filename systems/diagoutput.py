@@ -289,15 +289,15 @@ class systemDiag(object):
         if instrument_list is arg_not_supplied:
             instrument_list = system.get_instrument_list()
 
-        corr_list: CorrelationList = (
-            system.combForecast.get_forecast_correlation_matrices_from_instrument_code_list(
-                instrument_list
-            )
+        corr_list: CorrelationList = system.combForecast.get_forecast_correlation_matrices_from_instrument_code_list(
+            instrument_list
         )
-        corr: correlationEstimate = corr_list.most_recent_correlation_before_date_for_rules(
-            relevant_date=relevant_date,
-            rules_list=rules_list,
-            strict=strict,
+        corr: correlationEstimate = (
+            corr_list.most_recent_correlation_before_date_for_rules(
+                relevant_date=relevant_date,
+                rules_list=rules_list,
+                strict=strict,
+            )
         )
 
         return corr
