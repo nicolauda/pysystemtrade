@@ -366,7 +366,7 @@ def _plot_multiple_series(
 
 
 def _plot_notional_positions(
-    system, path: Optional[Path], instruments: Optional[Sequence[str]], clip_bounds=None
+    system, path: Optional[Path], instruments: Optional[Sequence[str]]
 ):
     if path is None:
         return
@@ -379,17 +379,8 @@ def _plot_notional_positions(
         for inst in instrs:
             pos = system.portfolio.get_notional_position(inst)
             pos = _clean_series(pd.Series(pos).astype(float)).sort_index()
-            if clip_bounds:
-                pos = pos.clip(lower=clip_bounds[0], upper=clip_bounds[1])
             plt.plot(pos.index, pos.values, label=inst)
-        if clip_bounds:
-            plt.axhline(clip_bounds[0], linestyle="--", linewidth=0.8, alpha=0.5)
-            plt.axhline(clip_bounds[1], linestyle="--", linewidth=0.8, alpha=0.5)
-            plt.title(
-                f"Notional positions (capped to [{clip_bounds[0]}, {clip_bounds[1]}])"
-            )
-        else:
-            plt.title("Notional positions (uncapped)")
+        plt.title("Notional positions")
         plt.ylabel("Notional position")
         plt.xlabel("Date")
         plt.legend()
@@ -402,7 +393,7 @@ def _plot_notional_positions(
 
 
 def _plot_buffered_positions(
-    system, path: Optional[Path], instruments: Optional[Sequence[str]], clip_bounds=None
+    system, path: Optional[Path], instruments: Optional[Sequence[str]]
 ):
     if path is None:
         return
@@ -415,17 +406,8 @@ def _plot_buffered_positions(
         for inst in instrs:
             pos = system.accounts.get_buffered_position(inst, roundpositions=True)
             pos = _clean_series(pd.Series(pos).astype(float)).sort_index()
-            if clip_bounds:
-                pos = pos.clip(lower=clip_bounds[0], upper=clip_bounds[1])
             plt.step(pos.index, pos.values, where="post", label=inst)
-        if clip_bounds:
-            plt.axhline(clip_bounds[0], linestyle="--", linewidth=0.8, alpha=0.5)
-            plt.axhline(clip_bounds[1], linestyle="--", linewidth=0.8, alpha=0.5)
-            plt.title(
-                f"Buffered positions (capped to [{clip_bounds[0]}, {clip_bounds[1]}])"
-            )
-        else:
-            plt.title("Buffered positions (executed, rounded contracts)")
+        plt.title("Buffered positions (executed, rounded contracts)")
         plt.ylabel("Contracts")
         plt.xlabel("Date")
         plt.legend()
@@ -662,6 +644,47 @@ def _extract_forecast_series(forecast: Any) -> Optional[pd.Series]:
     series = pd.to_numeric(series, errors="coerce")
     series = series.dropna()
     return series if not series.empty else None
+
+
+def _get_combined_forecast_for_instrument(
+    system, instrument_code: str
+) -> Optional[pd.Series]:
+    """Return an instrument combined forecast from the `combForecast` stage."""
+    try:
+        forecast = system.combForecast.get_combined_forecast(instrument_code)
+    except Exception:
+        return None
+    return _extract_forecast_series(forecast)
+
+
+def _plot_combined_forecasts_all_instruments(
+    system, results_dir: Path, timestamp: str, instruments: Sequence[str]
+) -> dict[str, Path]:
+    """Generate a single combined forecast plot with one line per instrument."""
+    forecasts_by_instrument: dict[str, pd.Series] = {}
+    for instrument_code in instruments:
+        combined_forecast = _get_combined_forecast_for_instrument(
+            system, instrument_code
+        )
+        if combined_forecast is None or combined_forecast.empty:
+            continue
+        forecasts_by_instrument[instrument_code] = combined_forecast
+
+    if not forecasts_by_instrument:
+        print("Combined forecast plots skipped (no forecast data available).")
+        return {}
+
+    figure_path = results_dir / f"combined_forecasts_{timestamp}.png"
+    _plot_multiple_series(
+        forecasts_by_instrument,
+        figure_path,
+        title="Combined forecasts by instrument",
+        ylabel="Forecast",
+    )
+    if not figure_path.exists():
+        return {}
+
+    return {"combined_forecasts": figure_path}
 
 
 def _sum_series_list(series_list: list[pd.Series]) -> Optional[pd.Series]:
@@ -2257,11 +2280,8 @@ def run_backtest(
             figures["equity"] = results_dir / f"equity_curve_{timestamp}.png"
             figures["drawdown"] = results_dir / f"drawdown_{timestamp}.png"
             figures["rolling_std"] = results_dir / f"rolling_ann_std_{timestamp}.png"
-            figures["notional_uncapped"] = (
-                results_dir / f"notional_positions_uncapped_{timestamp}.png"
-            )
-            figures["notional_capped"] = (
-                results_dir / f"notional_positions_capped_{timestamp}.png"
+            figures["notional_positions"] = (
+                results_dir / f"notional_positions_{timestamp}.png"
             )
             figures["buffered_positions"] = (
                 results_dir / f"buffered_positions_{timestamp}.png"
@@ -2276,22 +2296,21 @@ def run_backtest(
             )
             _plot_notional_positions(
                 system,
-                figures["notional_uncapped"],
+                figures["notional_positions"],
                 instruments_for_output,
-                clip_bounds=None,
-            )
-            _plot_notional_positions(
-                system,
-                figures["notional_capped"],
-                instruments_for_output,
-                clip_bounds=(-20, 20),
             )
             _plot_buffered_positions(
                 system,
                 figures["buffered_positions"],
                 instruments_for_output,
-                clip_bounds=None,
             )
+            combined_forecast_figures = _plot_combined_forecasts_all_instruments(
+                system,
+                results_dir,
+                timestamp,
+                instruments_for_output,
+            )
+            figures.update(combined_forecast_figures)
             if rule_group_curves:
                 _plot_multiple_series(
                     rule_group_curves,
