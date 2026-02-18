@@ -2125,6 +2125,8 @@ Note that the startup script will also mark all processes as close (as there sho
 
 This will check to see if a process PID is active, and if not it will mark a process as close, assumed crashed. This is also done periodically by the [system monitor and/or dashboard](/docs/dashboard_and_monitor.md), if running.
 
+You can also schedule the dedicated process `run_process_check` once per day (for example around midnight) to perform the same PID sanity check and clear stale "running" flags before other daily jobs start.
+
 #####  View process configuration
 
 This allows you to see the configuration for each process, either from `control_config.yaml` or the `private_control_config.yaml` file. See [scheduling](#pysystemtrade-scheduling).
@@ -2645,7 +2647,7 @@ Because I use cron myself, there are is a [cron tab included in pysystemtrade](h
 Useful things to note about the crontab:
 
 - We start the stack handler and capital update processes. These run 'all day' (you can envisage a situation in which other processes also run all day, if you are running certain kinds of intraday system). They will actually start and then stop when the process configuration (in YAML) tells them to.
-- We then start a bunch of 'once a day' processes: `run_daily_price_updates`, `run_systems`, `run_strategy_order_generator`, `run_cleaners`, `run_backups`, `run_reports`. They are started in the sequence they will run, but their behaviour will actually be governed by the process configuration in YAML (below)
+- We then start a bunch of 'once a day' processes: `run_process_check`, `run_daily_price_updates`, `run_systems`, `run_strategy_order_generator`, `run_cleaners`, `run_backups`, `run_reports`. They are started in the sequence they will run, but their behaviour will actually be governed by the process configuration in YAML (below)
 - On startup, we start a MongoDB instance, and run the [startup script](#start-up-script)
 
 #### Process configuration
@@ -2661,6 +2663,7 @@ Each of these is a dict, with process names as keys. All values are strings; sta
 ```
 process_configuration_start_time:
   default: '00:01'
+  run_process_check: '00:01'
   run_stack_handler: '00:01'
   run_capital_update: '01:00'
   run_daily_prices_updates: '20:00' # we start these off at 5 minute intervals, although the previous process will govern how they actually run
@@ -2671,6 +2674,7 @@ process_configuration_start_time:
   run_reports: '20:25'
 process_configuration_stop_time:
   default: '23:50'
+  run_process_check: '23:50'
   run_strategy_order_generator: '19:30' # this in case we're running it throughout the day
   run_stack_handler: '19:45' # I stop trading late in the US afternoon session to give myself a few hours for daily processes to run
   run_capital_update: '19:50'

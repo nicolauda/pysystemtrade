@@ -1,5 +1,6 @@
 process_configuration_start_time:
   default: '00:01'
+  run_process_check: '00:01'
   run_stack_handler: '00:01'
   run_capital_update: '01:00'
   run_daily_prices_updates: '20:00'
@@ -13,6 +14,7 @@ process_configuration_start_time:
   run_reports: '20:25'
 process_configuration_stop_time:
   default: '23:50'
+  run_process_check: '23:50'
   run_strategy_order_generator: '23:50'
   run_stack_handler: '19:45'
   run_capital_update: '19:50'
@@ -43,6 +45,9 @@ process_configuration_stop_time:
 #  run_reports: 'run_strategy_order_generator'
 # we include every method to make process monitoring easier
 process_configuration_methods:
+  run_process_check:
+    check_if_pid_running_and_if_not_finish_all_processes:
+      max_executions: 1
   run_capital_update:
     update_total_capital:
       frequency: 120
