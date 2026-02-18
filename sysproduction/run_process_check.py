@@ -6,9 +6,7 @@ from sysproduction.data.control_process import dataControlProcess
 def run_process_check():
     process_name = "run_process_check"
     data = dataBlob(log_name=process_name)
-    list_of_timer_names_and_functions = (
-        get_list_of_timer_functions_for_process_check()
-    )
+    list_of_timer_names_and_functions = get_list_of_timer_functions_for_process_check()
     process_check = processToRun(process_name, data, list_of_timer_names_and_functions)
     process_check.run_process()
 
