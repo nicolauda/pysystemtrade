@@ -35,10 +35,10 @@ class strategyRunner:
     def strategy_method(self):
         return self._strategy_method
 
-    def run_strategy_method(self):
+    def run_strategy_method(self, **kwargs):
         method = self.strategy_method
         # no arguments. no return. no explanations
-        method()
+        method(**kwargs)
 
 
 def get_strategy_method(

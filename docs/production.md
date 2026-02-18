@@ -1799,6 +1799,7 @@ The code to run each strategy's backtest is defined in the configuration paramet
 The following optional parameters are used only by `run_strategy_order_generator`:
 - `max_executions` the number of times the generator should be run on each iteration of run_systems. Normally 1, unless you have some whacky intraday system. Can be omitted.
 - `frequency` how often, in minutes, the generator is run. Normally 60 (but only relevant if max_executions>1). Can be omitted.
+- `order_generation_by_zone` optional dict `zone -> HH:MM` (for example `ASIA`, `EMEA`, `US`) to run one intra-day pass per zone. If omitted, the legacy behavior runs the full instrument universe each time. If configured, only due zones are processed, each zone runs at most once per day, and late starts catch up overdue zones in zone-order.
 
 See [system order generator](#strategy-order-generator) and scheduling processes(#process-configuration) for more details.
 
@@ -2803,6 +2804,12 @@ arguments:
         US: '20:00'
     _methods_on_completion: # and this block is passed to all methods that run on completion only - make sure you use **kwargs to trap if required
         a: 'test'
+  run_strategy_order_generator:
+    strategy_name:
+      order_generation_by_zone:
+        ASIA: '05:00'
+        EMEA: '11:00'
+        US: '18:00'
 
 ```
 

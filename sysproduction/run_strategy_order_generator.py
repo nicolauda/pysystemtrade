@@ -30,8 +30,8 @@ def run_strategy_order_generator():
     system_process.run_process()
 
 
-def strategy_order_function_to_be_renamed(self):
-    self.run_strategy_method()
+def strategy_order_function_to_be_renamed(self, **kwargs):
+    self.run_strategy_method(**kwargs)
 
 
 def get_list_of_strategy_order_timer_functions_for_strategies(data):

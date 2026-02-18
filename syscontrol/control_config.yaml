@@ -34,6 +34,12 @@ process_configuration_stop_time:
 #        ASIA: '07:00'
 #        EMEA: '18:00'
 #        US: '20:00'
+#  run_strategy_order_generator:
+#    strategy_name:
+#      order_generation_by_zone:
+#        ASIA: '05:00'
+#        EMEA: '11:00'
+#        US: '18:00'
 #    _methods_on_completion: # and this block is passed to all methods that run on completion only
 #        a: 'test'
 # Examples:
