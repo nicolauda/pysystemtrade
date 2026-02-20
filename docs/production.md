@@ -1579,6 +1579,11 @@ Use `sysproduction/info_on_sampled_contracts.py` to list the currently sampled c
 python sysproduction/info_on_sampled_contracts.py --dashboard-pdf /path/to/reports/sampled_contracts_dashboard.pdf
 ```
 
+Linux script:
+```
+. $SCRIPT_PATH/info_on_sampled_contracts
+```
+
 - Console output shows a clean, text-only block per instrument.
 - The PDF starts with a summary section (text only) covering all instruments, followed by one chart page per instrument with the same contract details overlaid.
 - If `--dashboard-pdf` is omitted, the path falls back to `reporting_directory/sampled_contracts_dashboard.pdf`.
@@ -1990,8 +1995,9 @@ auto_roll_expired: True
 
 When the same logic runs non-interactively (for example via `run_update_roll_status`
 in a scheduled task) any situation that would normally ask you to choose a roll
-state falls back to `Force` automatically so the process cannot hang waiting for
-input.
+state falls back to an automatic choice so the process cannot hang waiting for
+input: `Force` by default, or `Force_Outright` when the priced contract expiry
+is imminent (`days_until_expiry <= near_expiry_days`).
 
 What happens next will depend on the parameters you have decided upon:
 
