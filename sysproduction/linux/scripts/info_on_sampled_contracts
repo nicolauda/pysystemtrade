@@ -1,0 +1,3 @@
+#!/bin/bash
+. ~/.profile
+. p sysproduction.info_on_sampled_contracts.list_sampled_contracts
