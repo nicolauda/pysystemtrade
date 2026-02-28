@@ -2656,6 +2656,7 @@ Useful things to note about the crontab:
 - We start the stack handler and capital update processes. These run 'all day' (you can envisage a situation in which other processes also run all day, if you are running certain kinds of intraday system). They will actually start and then stop when the process configuration (in YAML) tells them to.
 - We then start a bunch of 'once a day' processes: `run_process_check`, `run_daily_price_updates`, `run_systems`, `run_strategy_order_generator`, `run_cleaners`, `run_backups`, `run_reports`. They are started in the sequence they will run, but their behaviour will actually be governed by the process configuration in YAML (below)
 - On startup, we start a MongoDB instance, and run the [startup script](#start-up-script)
+- If your broker login requires MFA, prefer a supervised weekly host reboot slot (for example Sunday afternoon) so `@reboot` startup jobs can be confirmed manually before weekday automation resumes.
 
 #### Process configuration
 
