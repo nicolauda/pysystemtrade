@@ -1011,11 +1011,20 @@ def _normalise_contract_code(raw_contract_code: object) -> str | None:
     return None
 
 
+def _empty_roll_calendar() -> rollCalendar:
+    """Return an empty roll-calendar object with expected columns."""
+
+    empty_dataframe = pd.DataFrame(
+        columns=["current_contract", "next_contract", "carry_contract"]
+    )
+    return rollCalendar(empty_dataframe)
+
+
 def _normalise_roll_calendar(calendar: rollCalendar) -> rollCalendar:
     """Return sorted, de-duplicated roll calendar."""
 
     if len(calendar) == 0:
-        return rollCalendar.create_empty()
+        return _empty_roll_calendar()
 
     as_dataframe = pd.DataFrame(calendar).sort_index()
     as_dataframe = as_dataframe[~as_dataframe.index.duplicated(keep="first")]
@@ -1200,7 +1209,7 @@ def _write_roll_calendar_to_csv(
     if has_existing_calendar:
         existing_calendar = csv_roll_calendars.get_roll_calendar(instrument_code)
     else:
-        existing_calendar = rollCalendar.create_empty()
+        existing_calendar = _empty_roll_calendar()
 
     merged_calendar, merge_outcome = _merge_roll_calendars_non_destructive(
         existing_calendar=existing_calendar,

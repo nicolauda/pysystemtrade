@@ -119,6 +119,29 @@ class _FakeRollParametersData:
         return object()
 
 
+class _FakeCsvRollCalendarData:
+    stored_calendars: dict[str, nd_import.rollCalendar] = {}
+    writes: list[tuple[str, nd_import.rollCalendar]] = []
+
+    def __init__(self, datapath):
+        self.datapath = datapath
+
+    def is_code_in_data(self, instrument_code: str) -> bool:
+        return instrument_code in self.stored_calendars
+
+    def get_roll_calendar(self, instrument_code: str) -> nd_import.rollCalendar:
+        return self.stored_calendars[instrument_code]
+
+    def add_roll_calendar(
+        self,
+        instrument_code: str,
+        roll_calendar: nd_import.rollCalendar,
+        ignore_duplication: bool = True,
+    ):
+        self.stored_calendars[instrument_code] = roll_calendar
+        self.writes.append((instrument_code, roll_calendar))
+
+
 class _FakeCsvPriceDataWithFinalFallback:
     def __init__(self, datapath, config):
         self._final_column = config.input_column_mapping.get("FINAL")
@@ -367,6 +390,29 @@ def test_merge_roll_calendar_skips_duplicate_transition_on_new_timestamp():
     assert outcome.candidate_rows_skipped == 1
     assert len(merged_calendar) == 1
     assert merged_calendar.index[0] == pd.Timestamp("2025-09-11 05:00:00")
+
+
+def test_write_roll_calendar_to_csv_handles_missing_existing_calendar(monkeypatch):
+    _FakeCsvRollCalendarData.stored_calendars = {}
+    _FakeCsvRollCalendarData.writes = []
+    monkeypatch.setattr(nd_import, "csvRollCalendarData", _FakeCsvRollCalendarData)
+
+    candidate = _make_roll_calendar(
+        [("2026-01-02 00:00:00", "20260300", "20260400", "20260400")]
+    )
+
+    outcome = nd_import._write_roll_calendar_to_csv(
+        instrument_code="BRENT-LAST",
+        output_datapath="unused",
+        roll_calendar_to_write=candidate,
+    )
+
+    assert outcome.existing_rows == 0
+    assert outcome.candidate_rows == 1
+    assert outcome.rows_added == 1
+    assert outcome.rows_replaced == 0
+    assert len(_FakeCsvRollCalendarData.writes) == 1
+    assert _FakeCsvRollCalendarData.writes[0][0] == "BRENT-LAST"
 
 
 def test_merge_multiple_prices_replaces_incoherent_overlap_and_adds_missing_rows():
