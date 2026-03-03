@@ -1579,12 +1579,36 @@ Use `sysproduction/info_on_sampled_contracts.py` to list the currently sampled c
 python sysproduction/info_on_sampled_contracts.py --dashboard-pdf /path/to/reports/sampled_contracts_dashboard.pdf
 ```
 
+Single-instrument example (no prompt):
+```bash
+python sysproduction/info_on_sampled_contracts.py --instrument US10
+```
+
+Explicit date window + terminal figures:
+```bash
+python sysproduction/info_on_sampled_contracts.py --instrument US10 --start-date 2025-01-01 --end-date 2025-12-31 --output-mode terminal
+```
+
 Linux script:
 ```
 . $SCRIPT_PATH/info_on_sampled_contracts
 ```
 
 - Console output shows a clean, text-only block per instrument.
+- In interactive terminals, the Linux wrapper starts a guided menu:
+  instrument (`ENTER` = all), date window (`ENTER` = full available range), and
+  output mode (`report` PDF or `terminal` with figures).
+- If an invalid instrument code is entered, the script prints the full list of
+  available instruments and asks again.
+- At startup, the script prints how many instruments are currently present in
+  DB multiple prices (header summary before instrument blocks).
+- For each requested instrument, output includes metadata from
+  `data/futures/csvconfig/instrumentconfig.csv` (for example description,
+  point size/multiplier, currency, asset class, costs, region).
+- Date-window filtering applies to adjusted-price coverage stats and charts.
+- In `terminal` mode on headless sessions (no interactive display backend), the
+  script asks for a directory where PNG figures should be saved (`ENTER` skips
+  figure output).
 - The PDF starts with a summary section (text only) covering all instruments, followed by one chart page per instrument with the same contract details overlaid.
 - If `--dashboard-pdf` is omitted, the path falls back to `reporting_directory/sampled_contracts_dashboard.pdf`.
 
