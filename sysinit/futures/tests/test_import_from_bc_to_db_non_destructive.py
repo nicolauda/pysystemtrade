@@ -392,6 +392,177 @@ def test_merge_roll_calendar_skips_duplicate_transition_on_new_timestamp():
     assert merged_calendar.index[0] == pd.Timestamp("2025-09-11 05:00:00")
 
 
+def test_count_price_contract_regressions_detects_backward_switches():
+    multiple_prices = _make_multiple_prices(
+        [
+            (
+                "2026-02-13 23:00:00",
+                0.19085,
+                0.18935,
+                0.18935,
+                "20260300",
+                "20260400",
+                "20260400",
+            ),
+            (
+                "2026-02-13 23:00:01",
+                0.18935,
+                0.18825,
+                0.18825,
+                "20260400",
+                "20260500",
+                "20260500",
+            ),
+            (
+                "2026-02-16 00:00:00",
+                0.19110,
+                0.18960,
+                0.18960,
+                "20260300",
+                "20260400",
+                "20260400",
+            ),
+        ]
+    )
+
+    assert nd_import._count_price_contract_regressions(multiple_prices) == 1
+
+
+def test_should_prefer_candidate_multiple_prices_for_clean_monotonic_candidate():
+    merged_multiple = _make_multiple_prices(
+        [
+            (
+                "2026-02-13 23:00:00",
+                0.19085,
+                0.18935,
+                0.18935,
+                "20260300",
+                "20260400",
+                "20260400",
+            ),
+            (
+                "2026-02-13 23:00:01",
+                0.18935,
+                0.18825,
+                0.18825,
+                "20260400",
+                "20260500",
+                "20260500",
+            ),
+            (
+                "2026-02-16 00:00:00",
+                0.19110,
+                0.18960,
+                0.18960,
+                "20260300",
+                "20260400",
+                "20260400",
+            ),
+        ]
+    )
+    candidate_multiple = _make_multiple_prices(
+        [
+            (
+                "2026-02-13 23:00:00",
+                0.19085,
+                0.18935,
+                0.18935,
+                "20260300",
+                "20260400",
+                "20260400",
+            ),
+            (
+                "2026-02-16 00:00:00",
+                0.19110,
+                0.18960,
+                0.18960,
+                "20260300",
+                "20260400",
+                "20260400",
+            ),
+            (
+                "2026-02-16 06:00:00",
+                0.18955,
+                0.18845,
+                0.18845,
+                "20260400",
+                "20260500",
+                "20260500",
+            ),
+        ]
+    )
+
+    should_prefer_candidate = nd_import._should_prefer_candidate_multiple_prices(
+        merged_multiple_prices=merged_multiple,
+        candidate_multiple_prices=candidate_multiple,
+    )
+
+    assert should_prefer_candidate
+
+
+def test_should_not_prefer_candidate_multiple_prices_when_candidate_is_older():
+    merged_multiple = _make_multiple_prices(
+        [
+            (
+                "2026-02-13 23:00:00",
+                0.19085,
+                0.18935,
+                0.18935,
+                "20260300",
+                "20260400",
+                "20260400",
+            ),
+            (
+                "2026-02-13 23:00:01",
+                0.18935,
+                0.18825,
+                0.18825,
+                "20260400",
+                "20260500",
+                "20260500",
+            ),
+            (
+                "2026-02-16 00:00:00",
+                0.19110,
+                0.18960,
+                0.18960,
+                "20260300",
+                "20260400",
+                "20260400",
+            ),
+        ]
+    )
+    candidate_multiple = _make_multiple_prices(
+        [
+            (
+                "2026-02-13 23:00:00",
+                0.19085,
+                0.18935,
+                0.18935,
+                "20260300",
+                "20260400",
+                "20260400",
+            ),
+            (
+                "2026-02-13 23:00:30",
+                0.19090,
+                0.18940,
+                0.18940,
+                "20260300",
+                "20260400",
+                "20260400",
+            ),
+        ]
+    )
+
+    should_prefer_candidate = nd_import._should_prefer_candidate_multiple_prices(
+        merged_multiple_prices=merged_multiple,
+        candidate_multiple_prices=candidate_multiple,
+    )
+
+    assert not should_prefer_candidate
+
+
 def test_write_roll_calendar_to_csv_handles_missing_existing_calendar(monkeypatch):
     _FakeCsvRollCalendarData.stored_calendars = {}
     _FakeCsvRollCalendarData.writes = []
