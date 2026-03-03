@@ -1271,6 +1271,82 @@ def _multiple_prices_row_is_coherent(multiple_row: pd.Series) -> bool:
     return True
 
 
+def _contract_code_to_month_number(raw_contract_code: object) -> int | None:
+    """Convert a contract code to a comparable month number (`YYYY * 12 + MM`)."""
+
+    normalised_contract = _normalise_contract_code(raw_contract_code)
+    if normalised_contract is None:
+        return None
+
+    contract_yyyymm = normalised_contract[:6]
+    try:
+        year = int(contract_yyyymm[:4])
+        month = int(contract_yyyymm[4:6])
+    except ValueError:
+        return None
+
+    if month < 1 or month > 12:
+        return None
+
+    return year * 12 + month
+
+
+def _count_price_contract_regressions(multiple_prices: futuresMultiplePrices) -> int:
+    """Count timestamps where `PRICE_CONTRACT` goes backwards in time."""
+
+    normalised_multiple = _normalise_multiple_prices(multiple_prices)
+    if len(normalised_multiple) <= 1:
+        return 0
+
+    multiple_dataframe = pd.DataFrame(normalised_multiple)
+    if "PRICE_CONTRACT" not in multiple_dataframe:
+        return 0
+
+    month_numbers = multiple_dataframe["PRICE_CONTRACT"].apply(
+        _contract_code_to_month_number
+    )
+    previous_month_numbers = month_numbers.shift(1)
+    regression_mask = (
+        month_numbers.notna()
+        & previous_month_numbers.notna()
+        & (month_numbers < previous_month_numbers)
+    )
+
+    return int(regression_mask.sum())
+
+
+def _should_prefer_candidate_multiple_prices(
+    merged_multiple_prices: futuresMultiplePrices,
+    candidate_multiple_prices: futuresMultiplePrices,
+) -> bool:
+    """Return `True` when candidate should replace merged multiple prices.
+
+    We only switch to candidate when the merged output still contains
+    contract-sequence regressions but candidate is clean and reaches at least
+    the same latest timestamp.
+    """
+
+    merged_regressions = _count_price_contract_regressions(merged_multiple_prices)
+    if merged_regressions == 0:
+        return False
+
+    candidate_regressions = _count_price_contract_regressions(candidate_multiple_prices)
+    if candidate_regressions > 0:
+        return False
+
+    merged_norm = _normalise_multiple_prices(merged_multiple_prices)
+    candidate_norm = _normalise_multiple_prices(candidate_multiple_prices)
+    if len(candidate_norm) == 0:
+        return False
+    if len(merged_norm) == 0:
+        return True
+
+    merged_last_timestamp = pd.DataFrame(merged_norm).index.max()
+    candidate_last_timestamp = pd.DataFrame(candidate_norm).index.max()
+
+    return candidate_last_timestamp >= merged_last_timestamp
+
+
 def _merge_multiple_prices_non_destructive(
     existing_multiple_prices: futuresMultiplePrices,
     candidate_multiple_prices: futuresMultiplePrices,
@@ -1398,8 +1474,18 @@ def _merge_adjusted_prices_non_destructive(
 
 def _rebuild_and_merge_multiple_prices_non_destructive(
     instrument_code: str,
-) -> tuple[futuresMultiplePrices, DerivedMergeOutcome]:
-    """Rebuild multiple prices and merge non-destructively into DB."""
+) -> tuple[futuresMultiplePrices, DerivedMergeOutcome, bool]:
+    """Rebuild and store multiple prices with a monotonicity safety fallback.
+
+    Args:
+        instrument_code: Instrument to rebuild.
+
+    Returns:
+        Tuple `(multiple_prices, merge_outcome, force_candidate_overwrite)`.
+        The boolean is `True` when the function bypasses conservative
+        timestamp-level merge and stores the rebuilt candidate directly to
+        eliminate detected `PRICE_CONTRACT` regressions.
+    """
 
     candidate_multiple_prices = process_multiple_prices_single_instrument(
         instrument_code=instrument_code,
@@ -1412,6 +1498,19 @@ def _rebuild_and_merge_multiple_prices_non_destructive(
         candidate_multiple_prices=candidate_multiple_prices,
     )
 
+    force_candidate_overwrite = _should_prefer_candidate_multiple_prices(
+        merged_multiple_prices=merged_multiple_prices,
+        candidate_multiple_prices=candidate_multiple_prices,
+    )
+    if force_candidate_overwrite:
+        merged_multiple_prices = _normalise_multiple_prices(candidate_multiple_prices)
+        diag_prices.db_futures_multiple_prices_data.add_multiple_prices(
+            instrument_code,
+            merged_multiple_prices,
+            ignore_duplication=True,
+        )
+        return merged_multiple_prices, merge_outcome, True
+
     if merge_outcome.rows_added > 0 or merge_outcome.rows_replaced > 0:
         diag_prices.db_futures_multiple_prices_data.add_multiple_prices(
             instrument_code,
@@ -1419,14 +1518,25 @@ def _rebuild_and_merge_multiple_prices_non_destructive(
             ignore_duplication=True,
         )
 
-    return merged_multiple_prices, merge_outcome
+    return merged_multiple_prices, merge_outcome, False
 
 
 def _rebuild_and_merge_adjusted_prices_non_destructive(
     instrument_code: str,
     multiple_prices: futuresMultiplePrices,
+    force_candidate_overwrite: bool = False,
 ) -> DerivedMergeOutcome:
-    """Rebuild adjusted prices and merge non-destructively into DB."""
+    """Rebuild adjusted prices and merge or overwrite into DB.
+
+    Args:
+        instrument_code: Instrument to rebuild.
+        multiple_prices: Multiple-price series used to rebuild adjusted prices.
+        force_candidate_overwrite: If `True`, write rebuilt adjusted prices as
+            authoritative output instead of conservative row-level merge.
+
+    Returns:
+        Merge summary for adjusted prices.
+    """
 
     candidate_adjusted_prices = process_adjusted_prices_single_instrument(
         instrument_code=instrument_code,
@@ -1435,9 +1545,26 @@ def _rebuild_and_merge_adjusted_prices_non_destructive(
         ADD_TO_CSV=False,
     )
     existing_adjusted_prices = diag_prices.get_adjusted_prices(instrument_code)
+    existing_norm = _normalise_adjusted_prices(existing_adjusted_prices)
+    candidate_norm = _normalise_adjusted_prices(candidate_adjusted_prices)
+    if force_candidate_overwrite:
+        diag_prices.db_futures_adjusted_prices_data.add_adjusted_prices(
+            instrument_code,
+            candidate_norm,
+            ignore_duplication=True,
+        )
+        return DerivedMergeOutcome(
+            existing_rows=len(existing_norm),
+            candidate_rows=len(candidate_norm),
+            merged_rows=len(candidate_norm),
+            rows_added=max(len(candidate_norm) - len(existing_norm), 0),
+            rows_replaced=0,
+            candidate_rows_skipped=0,
+        )
+
     merged_adjusted_prices, merge_outcome = _merge_adjusted_prices_non_destructive(
-        existing_adjusted_prices=existing_adjusted_prices,
-        candidate_adjusted_prices=candidate_adjusted_prices,
+        existing_adjusted_prices=existing_norm,
+        candidate_adjusted_prices=candidate_norm,
     )
 
     if merge_outcome.rows_added > 0 or merge_outcome.rows_replaced > 0:
@@ -1665,6 +1792,7 @@ if __name__ == "__main__":
     (
         merged_multiple_prices,
         multiple_merge_outcome,
+        multiple_was_force_overwritten,
     ) = _rebuild_and_merge_multiple_prices_non_destructive(
         instrument_code=instrument_code
     )
@@ -1676,9 +1804,16 @@ if __name__ == "__main__":
         f"replaced={multiple_merge_outcome.rows_replaced}, "
         f"skipped={multiple_merge_outcome.candidate_rows_skipped}"
     )
+    if multiple_was_force_overwritten:
+        print(
+            "Detected `PRICE_CONTRACT` regressions after conservative merge; "
+            "stored the freshly rebuilt multiple prices to keep contract "
+            "transitions monotonic."
+        )
     adjusted_merge_outcome = _rebuild_and_merge_adjusted_prices_non_destructive(
         instrument_code=instrument_code,
         multiple_prices=merged_multiple_prices,
+        force_candidate_overwrite=multiple_was_force_overwritten,
     )
     print(
         "Adjusted prices merge: "
