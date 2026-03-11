@@ -226,7 +226,7 @@ class CrossSectionalICGridResult:
         Args:
             horizon: Forward-return horizon (days) used to compute IC.
             rule: Trading rule name.
-            lags: Newey–West truncation lag. If None, uses the convention
+            lags: Newey-West truncation lag. If None, uses the convention
                 `max(0, horizon - 1)` and caps it to the available sample size.
 
         Returns:
