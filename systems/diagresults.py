@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -66,12 +66,12 @@ def _t_stat_hac_zero(x: pd.Series, *, lags: int) -> float:
 
     This is a heteroskedasticity- and autocorrelation-consistent (HAC) variant
     of the naive 1-sample t-stat for time-series data. It replaces the IID
-    standard error of the sample mean with a Newey–West long-run variance
+    standard error of the sample mean with a Newey-West long-run variance
     estimate using Bartlett weights.
 
     Args:
         x: Time series of observations.
-        lags: Truncation lag L for the Newey–West estimator. Values <= 0 fall
+        lags: Truncation lag L for the Newey-West estimator. Values <= 0 fall
             back to the naive t-stat.
 
     Returns:
@@ -259,6 +259,130 @@ class CrossSectionalICGridResult:
         if len(data) == 0:
             return pd.DataFrame()
         return pd.DataFrame(data).sort_index()
+
+    def ic_surface_frame(self, rule: str) -> pd.DataFrame:
+        """Build a date-by-horizon IC matrix for one rule.
+
+        Each column is the IC time series at that horizon; the row index is the
+        union of all observation dates across horizons (missing values are NaN).
+
+        Args:
+            rule: Trading rule name.
+
+        Returns:
+            DataFrame indexed by date with one column per available horizon,
+            sorted by horizon and date. Empty when there are no horizons or no
+            non-empty IC series for the rule.
+        """
+        rule_str = str(rule)
+        horizons = self.horizons
+        if len(horizons) == 0:
+            return pd.DataFrame()
+        data: dict[int, pd.Series] = {}
+        for h in horizons:
+            s = self.ic_series(horizon=int(h), rule=rule_str)
+            if s is not None and not s.empty:
+                data[int(h)] = s
+        if not data:
+            return pd.DataFrame()
+        df = pd.DataFrame(data)
+        cols = sorted(df.columns, key=int)
+        df = df.reindex(columns=cols)
+        return df.sort_index()
+
+    def plot_ic_surface_for_rule(
+        self,
+        rule: str,
+        *,
+        kind: Literal["3d", "heatmap"] = "heatmap",
+        ax=None,
+        fig=None,
+        cmap: str = "RdBu_r",
+        symmetric_vlim: bool = True,
+        vmin: float | None = None,
+        vmax: float | None = None,
+        title: str | None = None,
+        **kwargs: Any,
+    ):
+        """Plot IC as a function of date and horizon for one rule.
+
+        Args:
+            rule: Trading rule name.
+            kind: ``\"heatmap\"`` uses ``contourf`` (date × horizon). ``\"3d\"``
+                uses ``plot_surface`` in a 3D axes.
+            ax: Optional Matplotlib axis. For ``kind=\"3d\"``, must be a 3D axis
+                (or pass ``fig`` and leave ``ax`` as ``None`` to create one).
+            fig: Optional figure. Used when ``kind=\"3d\"`` and ``ax`` is
+                ``None`` to add a 3D subplot.
+            cmap: Colormap name.
+            symmetric_vlim: If ``True`` and neither ``vmin`` nor ``vmax`` is
+                set, symmetric limits are derived from the finite data max
+                absolute value.
+            vmin: Optional color scale minimum.
+            vmax: Optional color scale maximum.
+            title: Optional plot title.
+            **kwargs: Extra arguments forwarded to ``contourf`` / ``plot_surface``.
+
+        Returns:
+            The Matplotlib axis used for the plot.
+
+        Raises:
+            ValueError: If the IC surface frame is empty or ``kind`` is unknown.
+        """
+        import matplotlib.dates as mdates
+        import matplotlib.pyplot as plt
+
+        df = self.ic_surface_frame(rule)
+        if df.empty:
+            raise ValueError(f"No IC surface data for rule {rule!r}")
+
+        zvals = pd.to_numeric(df.to_numpy(dtype=float).ravel(), errors="coerce")
+        zvals = zvals[np.isfinite(zvals)]
+        if vmin is None and vmax is None and symmetric_vlim and zvals.size:
+            lim = float(np.nanmax(np.abs(zvals)))
+            if lim > 0.0:
+                vmin = -lim
+                vmax = lim
+
+        xd = mdates.date2num(pd.DatetimeIndex(df.index).to_pydatetime())
+        yh = df.columns.to_numpy(dtype=float)
+        X, Y = np.meshgrid(xd, yh)
+        Z = df.T.to_numpy(dtype=float)
+
+        if kind == "heatmap":
+            if ax is None:
+                _, ax = plt.subplots()
+            cs = ax.contourf(X, Y, Z, cmap=cmap, vmin=vmin, vmax=vmax, **kwargs)
+            ax.axhline(0.0, color="k", lw=0.3, alpha=0.3)
+            ax.set_xlabel("Date")
+            ax.set_ylabel("Horizon (days)")
+            ax.set_title(title or f"IC surface: {rule}")
+            ax.xaxis_date()
+            ax.grid(True, alpha=0.2)
+            plt.colorbar(cs, ax=ax, label="IC")
+            return ax
+
+        if kind == "3d":
+            if ax is None:
+                if fig is None:
+                    fig = plt.figure()
+                ax = fig.add_subplot(111, projection="3d")
+            surf = ax.plot_surface(
+                X, Y, Z, cmap=cmap, vmin=vmin, vmax=vmax, linewidth=0, antialiased=True, **kwargs
+            )
+            ax.set_xlabel("Date")
+            ax.set_ylabel("Horizon (days)")
+            ax.set_zlabel("IC")
+            ax.set_title(title or f"IC surface: {rule}")
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+            for tick in ax.get_xticklabels():
+                tick.set_rotation(20)
+                tick.set_ha("right")
+            fig_ref = ax.figure
+            fig_ref.colorbar(surf, ax=ax, shrink=0.55, label="IC")
+            return ax
+
+        raise ValueError(f"Unknown kind: {kind!r}; use 'heatmap' or '3d'")
 
     def mean_ic_by_horizon(self, *, rules: list[str] | None = None) -> pd.DataFrame:
         """Compute mean IC by horizon for each rule.
@@ -758,6 +882,99 @@ class RulesDiagnostics:
 
         return fig, axes
 
+    def plot_rule_ic_surface(self, rule: str, **kwargs: Any):
+        """Plot IC vs date and horizon for a single rule.
+
+        Args:
+            rule: Trading rule name.
+            **kwargs: Forwarded to `CrossSectionalICGridResult.plot_ic_surface_for_rule`.
+
+        Returns:
+            Matplotlib axis from the underlying plot helper.
+        """
+        return self.ic.plot_ic_surface_for_rule(rule, **kwargs)
+
+    def plot_rules_ic_surfaces(
+        self,
+        *,
+        rules: list[str] | None = None,
+        kind: Literal["3d", "heatmap"] = "heatmap",
+        ncols: int = 2,
+        figsize_per_ax: tuple[float, float] = (8.0, 3.0),
+        **kwargs: Any,
+    ) -> None:
+        """Plot one IC surface (heatmap or 3D) per rule in a subplot grid.
+
+        Args:
+            rules: Optional subset/order of rules. If omitted, uses all rules.
+            kind: ``\"heatmap\"`` or ``\"3d\"`` (each 3D panel uses its own colorbar).
+            ncols: Number of columns in the grid (at least 1).
+            figsize_per_ax: (width, height) in inches per subplot cell.
+            **kwargs: Forwarded to `plot_ic_surface_for_rule` (e.g. ``cmap``,
+                ``vmin``, ``vmax``, ``symmetric_vlim``).
+        """
+        import matplotlib.pyplot as plt
+
+        rules_use = (
+            list(_as_tuple_str(rules)) if rules is not None else list(self.rules)
+        )
+        n = len(rules_use)
+        if n == 0:
+            return
+
+        ncols_use = max(1, int(ncols))
+        nrows = int(np.ceil(n / ncols_use))
+        fig_w, fig_h = (float(figsize_per_ax[0]), float(figsize_per_ax[1]))
+
+        if kind == "heatmap":
+            fig, axes = plt.subplots(
+                nrows,
+                ncols_use,
+                figsize=(fig_w * ncols_use, fig_h * nrows),
+                squeeze=False,
+                constrained_layout=True,
+            )
+            for idx, rule in enumerate(rules_use):
+                r, c = divmod(idx, ncols_use)
+                ax = axes[r][c]
+                try:
+                    self.ic.plot_ic_surface_for_rule(
+                        rule,
+                        kind="heatmap",
+                        ax=ax,
+                        title=str(rule),
+                        **kwargs,
+                    )
+                except ValueError:
+                    ax.set_title(f"{rule} (no IC surface data)")
+            for idx in range(n, nrows * ncols_use):
+                r, c = divmod(idx, ncols_use)
+                axes[r][c].set_visible(False)
+            return
+
+        if kind == "3d":
+            fig = plt.figure(figsize=(fig_w * ncols_use, fig_h * nrows))
+            for idx, rule in enumerate(rules_use):
+                ax = fig.add_subplot(nrows, ncols_use, idx + 1, projection="3d")
+                try:
+                    self.ic.plot_ic_surface_for_rule(
+                        rule,
+                        kind="3d",
+                        ax=ax,
+                        fig=fig,
+                        title=str(rule),
+                        **kwargs,
+                    )
+                except ValueError:
+                    ax.set_title(f"{rule} (no IC surface data)")
+            for idx in range(n, nrows * ncols_use):
+                ax = fig.add_subplot(nrows, ncols_use, idx + 1)
+                ax.set_visible(False)
+            fig.tight_layout()
+            return
+
+        raise ValueError(f"Unknown kind: {kind!r}; use 'heatmap' or '3d'")
+
     def plot_rules_ic_and_persistence(
         self,
         *,
@@ -765,6 +982,9 @@ class RulesDiagnostics:
         plot_ic: bool = True,
         plot_persistence: bool = True,
         plot_ic_half_life: bool = True,
+        plot_ic_surface: bool = False,
+        ic_surface_kind: Literal["3d", "heatmap"] = "heatmap",
+        ic_surface_ncols: int = 2,
         smoothing_ic_half_life: int = 60,
         show_ic_std: bool = False,
     ) -> None:
@@ -778,6 +998,9 @@ class RulesDiagnostics:
             plot_ic: If `True`, plots mean IC by horizon.
             plot_persistence: If `True`, plots persistence curves.
             plot_ic_half_life: If `True`, plots IC series at half-life horizons.
+            plot_ic_surface: If `True`, adds a grid of IC date × horizon surfaces.
+            ic_surface_kind: ``\"heatmap\"`` or ``\"3d\"`` for surface plots.
+            ic_surface_ncols: Number of columns for the IC surface grid.
             smoothing_ic_half_life: Rolling window for IC-at-half-life smoothing.
             show_ic_std: If `True`, mean IC plot includes +/- std shading.
         """
@@ -804,6 +1027,12 @@ class RulesDiagnostics:
             self.plot_ic_at_half_life_for_rules(
                 rules=rules_use,
                 smoothing=smoothing_ic_half_life,
+            )
+        if plot_ic_surface:
+            self.plot_rules_ic_surfaces(
+                rules=rules_use,
+                kind=ic_surface_kind,
+                ncols=ic_surface_ncols,
             )
 
     def _plot_mean_ic_half_life_markers(

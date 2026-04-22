@@ -340,6 +340,12 @@ The module `systems/diagresults.py` provides these wrappers:
   `get_persistence_function`.
 - `RulesDiagnostics`: convenience wrapper combining IC + persistence (including
   plots such as "IC at half-life").
+- `CrossSectionalICGridResult.ic_surface_frame(rule)` builds a date-by-horizon IC
+  matrix for one rule; `plot_ic_surface_for_rule` plots it as a `contourf`
+  heatmap (default) or a 3D `plot_surface`.
+- `RulesDiagnostics.plot_rule_ic_surface` / `plot_rules_ic_surfaces` expose the
+  same views; `plot_rules_ic_and_persistence(..., plot_ic_surface=True)` adds a
+  grid of heatmaps (or 3D panels via `ic_surface_kind="3d"`).
 
 Plotting helpers accept `ax` / `axes` from Matplotlib; pass `None` to let the
 helpers create their own figure (so plots don't overlap), or pass a pre-created
