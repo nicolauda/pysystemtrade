@@ -89,8 +89,22 @@ def test_rules_diagnostics_plot_rule_ic_surface_smoke() -> None:
         "ewmac16_64": pd.Series([1.0, 0.4], index=[1, 2]),
     }
     summary_by_rule = {
-        "carry": {"half_life_abs": 5.0, "half_life_rel": 5.0, "rho1": 1.0, "n_lags": 2, "method": "pearson", "agg": "median"},
-        "ewmac16_64": {"half_life_abs": 6.0, "half_life_rel": 6.0, "rho1": 1.0, "n_lags": 2, "method": "pearson", "agg": "median"},
+        "carry": {
+            "half_life_abs": 5.0,
+            "half_life_rel": 5.0,
+            "rho1": 1.0,
+            "n_lags": 2,
+            "method": "pearson",
+            "agg": "median",
+        },
+        "ewmac16_64": {
+            "half_life_abs": 6.0,
+            "half_life_rel": 6.0,
+            "rho1": 1.0,
+            "n_lags": 2,
+            "method": "pearson",
+            "agg": "median",
+        },
     }
     diags = RulesDiagnostics.from_raw(
         rules_list=rules_list,
@@ -109,8 +123,22 @@ def test_plot_rules_ic_surfaces_heatmap_smoke() -> None:
         "ewmac16_64": pd.Series([1.0], index=[1]),
     }
     summary_by_rule = {
-        "carry": {"half_life_abs": 5.0, "half_life_rel": 5.0, "rho1": 1.0, "n_lags": 1, "method": "pearson", "agg": "median"},
-        "ewmac16_64": {"half_life_abs": 6.0, "half_life_rel": 6.0, "rho1": 1.0, "n_lags": 1, "method": "pearson", "agg": "median"},
+        "carry": {
+            "half_life_abs": 5.0,
+            "half_life_rel": 5.0,
+            "rho1": 1.0,
+            "n_lags": 1,
+            "method": "pearson",
+            "agg": "median",
+        },
+        "ewmac16_64": {
+            "half_life_abs": 6.0,
+            "half_life_rel": 6.0,
+            "rho1": 1.0,
+            "n_lags": 1,
+            "method": "pearson",
+            "agg": "median",
+        },
     }
     diags = RulesDiagnostics.from_raw(
         rules_list=rules_list,
@@ -129,7 +157,14 @@ def test_plot_rules_ic_surfaces_unknown_kind() -> None:
         ic_by_horizon=ic_by_horizon,
         persistence_by_rule={"carry": pd.Series([1.0], index=[1])},
         summary_by_rule={
-            "carry": {"half_life_abs": 5.0, "half_life_rel": 5.0, "rho1": 1.0, "n_lags": 1, "method": "pearson", "agg": "median"},
+            "carry": {
+                "half_life_abs": 5.0,
+                "half_life_rel": 5.0,
+                "rho1": 1.0,
+                "n_lags": 1,
+                "method": "pearson",
+                "agg": "median",
+            },
         },
     )
     with pytest.raises(ValueError, match="Unknown kind"):

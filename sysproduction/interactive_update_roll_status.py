@@ -440,13 +440,11 @@ def describe_roll_rules_from_parameters(auto_parameters: autoRollParameters):
         % (auto_parameters.auto_roll_if_relative_volume_higher_than)
         + "  - if relative volume between current and forward contract > %f, and if absolute volume contracts>%d, then considered liquid\n\n"
         % (auto_parameters.min_relative_volume, auto_parameters.min_absolute_volume)
-        + "Window 1: days_until_roll > %d\n"
-        % (auto_parameters.near_expiry_days)
+        + "Window 1: days_until_roll > %d\n" % (auto_parameters.near_expiry_days)
         + "   - priced flat + forward liquid: ROLL_ADJUSTED\n"
         + "   - position held + forward liquid: PASSIVE\n"
         + "   - forward not liquid: NO_ROLL\n\n"
-        + "Window 2: 0 < days_until_roll <= %d\n"
-        % (auto_parameters.near_expiry_days)
+        + "Window 2: 0 < days_until_roll <= %d\n" % (auto_parameters.near_expiry_days)
         + "   - priced flat + forward liquid: ROLL_ADJUSTED\n"
         + "   - priced flat + forward not liquid: NO_OPEN\n"
         + "   - position held + forward liquid: FORCE\n"
@@ -455,8 +453,7 @@ def describe_roll_rules_from_parameters(auto_parameters: autoRollParameters):
         + "   - priced flat: ROLL_ADJUSTED\n"
         + "   - position held + forward liquid: FORCE_OUTRIGHT\n"
         + "   - position held + forward not liquid: CLOSE\n\n"
-        + "%s\n"
-        % describe_action_for_default_roll_state_if_undecided(auto_parameters)
+        + "%s\n" % describe_action_for_default_roll_state_if_undecided(auto_parameters)
     )
 
 

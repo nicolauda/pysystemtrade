@@ -378,8 +378,12 @@ def _merge_multiple_prices_tail_only(
 
     candidate_start = candidate_as_dataframe.index.min()
     candidate_end = candidate_as_dataframe.index.max()
-    preserved_prefix = existing_as_dataframe[existing_as_dataframe.index < candidate_start]
-    preserved_suffix = existing_as_dataframe[existing_as_dataframe.index > candidate_end]
+    preserved_prefix = existing_as_dataframe[
+        existing_as_dataframe.index < candidate_start
+    ]
+    preserved_suffix = existing_as_dataframe[
+        existing_as_dataframe.index > candidate_end
+    ]
     merged_as_dataframe = pd.concat(
         [preserved_prefix, candidate_as_dataframe, preserved_suffix], axis=0
     )
@@ -412,9 +416,7 @@ def _merge_adjusted_prices_tail_only(
         [preserved_prefix, candidate_as_series, preserved_suffix], axis=0
     )
     merged_as_series = merged_as_series.sort_index()
-    merged_as_series = merged_as_series[
-        ~merged_as_series.index.duplicated(keep="last")
-    ]
+    merged_as_series = merged_as_series[~merged_as_series.index.duplicated(keep="last")]
 
     return futuresAdjustedPrices(merged_as_series)
 

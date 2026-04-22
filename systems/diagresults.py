@@ -368,7 +368,15 @@ class CrossSectionalICGridResult:
                     fig = plt.figure()
                 ax = fig.add_subplot(111, projection="3d")
             surf = ax.plot_surface(
-                X, Y, Z, cmap=cmap, vmin=vmin, vmax=vmax, linewidth=0, antialiased=True, **kwargs
+                X,
+                Y,
+                Z,
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                linewidth=0,
+                antialiased=True,
+                **kwargs,
             )
             ax.set_xlabel("Date")
             ax.set_ylabel("Horizon (days)")
