@@ -1613,7 +1613,10 @@ Linux script:
 - In `terminal` mode on headless sessions (no interactive display backend), the
   script asks for a directory where PNG figures should be saved (`ENTER` skips
   figure output).
-- The PDF starts with a summary section (text only) covering all instruments, followed by one chart page per instrument with the same contract details overlaid.
+- The PDF starts with a report overview page (including the DB multiple-prices
+  instrument count and selected-window summary), then a sampled-contract index,
+  then a text summary covering all requested instruments, followed by one chart
+  page per instrument with the same contract details overlaid.
 - If `--dashboard-pdf` is omitted, the path falls back to `reporting_directory/sampled_contracts_dashboard.pdf`.
 
 
@@ -2001,11 +2004,11 @@ NOTE: Adjusted price rolling will fail if the system can't find aligned prices f
 
 #### Cycle through instrument codes automatically, but manually decide when to roll
 
-This chooses a subset of instruments that are expiring soon. You will be prompted for the number of days ahead you want to look for expiries. This then behaves exactly like the manual option above, except it automatically cycles through the relevant subset of instruments.
+This chooses a subset of instruments whose desired roll date is approaching. You will be prompted for the number of days ahead you want to look for desired roll dates. This then behaves exactly like the manual option above, except it automatically cycles through the relevant subset of instruments.
 
 #### Cycle through instrument codes automatically, auto decide when to roll, manually confirm rolls
 
-Again this will first choose a subset of instruments that are expiring soon. The script then gives you the default auto rolls options, and offers the chance to adjust them. The default params are: 
+Again this will first choose a subset of instruments whose desired roll date is approaching. The script then gives you the default auto rolls options, and offers the chance to adjust them. The default params are: 
 
 ```
 auto_roll_if_relative_volume_higher_than: 1.0
@@ -2021,18 +2024,37 @@ auto_roll_expired: True
 `No_Open`). In interactive auto modes, valid names are normalised to
 `RollState` values before writing state changes.
 
+`near_expiry_days` is the window, measured from the desired roll date
+(`days_until_roll`), used by the auto-roll logic to switch from the normal
+pre-roll state to the more urgent branch.
+
 When the same logic runs non-interactively (for example via `run_update_roll_status`
 in a scheduled task) any situation that would normally ask you to choose a roll
 state falls back to an automatic choice so the process cannot hang waiting for
-input: `Force` by default, or `Force_Outright` when the priced contract expiry
-is imminent (`days_until_expiry <= near_expiry_days`).
+input: `Force` before the desired roll date, or `Force_Outright` on or after it
+(`days_until_roll <= 0`).
+
+The current three-window auto-roll state machine is:
+
+| Window | Condition | Position priced | Fwd is liquid | Status |
+| --- | --- | --- | --- | --- |
+| 1 | `days_until_roll > near_expiry_days` | `!= 0` | Yes | `Passive` |
+| 1 | `days_until_roll > near_expiry_days` | `!= 0` | No | `No_Roll` |
+| 1 | `days_until_roll > near_expiry_days` | `= 0` | Yes | `Roll_Adjusted` |
+| 1 | `days_until_roll > near_expiry_days` | `= 0` | No | `No_Roll` |
+| 2 | `0 < days_until_roll <= near_expiry_days` | `!= 0` | Yes | `Force` |
+| 2 | `0 < days_until_roll <= near_expiry_days` | `!= 0` | No | `No_Open` |
+| 2 | `0 < days_until_roll <= near_expiry_days` | `= 0` | Yes | `Roll_Adjusted` |
+| 2 | `0 < days_until_roll <= near_expiry_days` | `= 0` | No | `No_Open` |
+| 3 | `days_until_roll <= 0` | `!= 0` | Yes | `Force_Outright` |
+| 3 | `days_until_roll <= 0` | `!= 0` | No | `Close` |
+| 3 | `days_until_roll <= 0` | `= 0` | Yes/No | `Roll_Adjusted` |
 
 What happens next will depend on the parameters you have decided upon:
 
-- If the volume in the forward contract is less than the required relative volume, we do nothing
-- If the relative volume is fine, and you have no position in the priced contract, then we automatically decide to roll adjusted prices
-- If the relative volume is fine, and you have a position in the priced contract, and you have asked to manually input the required state on a case by case basis: that's what will happen
-- If the relative volume is fine, and you have a position in the priced contract, and you have NOT asked to manually input the required state, then the state will automatically be changed to one of passive, force, or force outright (as selected). I strongly recommend using Passive rolling here, and then manually changing individual instruments if required.
+- If the forward contract is not liquid enough, the system will stay in `No_Roll`, move to `No_Open` inside the soft window, or use `Close` at/past the desired roll date when a priced position still remains.
+- If the forward contract is liquid and you have no position in the priced contract, the system will roll adjusted prices.
+- If the forward contract is liquid and you still have a priced position, the state machine will move through `Passive`, `Force`, and `Force_Outright` as the desired roll date approaches and is reached.
 
 If a decision is made to roll adjusted prices, you will be asked to confirm you are happy with the prices changes before they are written to the database.
 
@@ -2304,6 +2326,30 @@ View historic series of positions and orders. Options are:
 #### Reports
 
 Allows you to run any of the [reports](#reporting) on an ad-hoc basis.
+
+This now also includes a DB price-quality report, which scans DB multiple and
+adjusted prices for missing current prices (`PRICE` missing while `FORWARD`
+exists) and backward `PRICE_CONTRACT` transitions. In `interactive_diagnostics`
+you can run it for all instruments or a single instrument, using either the
+default recent window (last 365 calendar days), custom dates, or full history.
+It is also included in the default `run_reports` daily report set unless your
+private control config explicitly overrides the `run_reports` method list.
+
+For deeper remediation there are also two adhoc CLI tools:
+
+- `python sysinit/futures/adhoc/analyze_price_quality_issues.py` classifies
+  each instrument into partial-gap alignment issues (rows where `PRICE` is
+  missing on a timestamp even though the same day still has valid current
+  prices), full-gap days (no current `PRICE` anywhere that day while
+  `FORWARD` exists), adjusted-price misalignment, and optional tail rebuild
+  opportunities from the current roll calendar.
+- `python sysinit/futures/adhoc/repair_price_quality_issues.py` applies the
+  conservative fixes found by the analysis: dropping only partial-gap rows from
+  derived multiple prices, optionally refreshing the rebuildable tail from the
+  existing roll calendar when that strictly improves quality, and then
+  restitching adjusted prices from the chosen multiple series. The script is
+  `dry-run` by default, supports `--apply`, `--instrument`, `--output-csv`,
+  `--output-json`, and creates backups before writing in apply mode.
 
 
 ### Interactive order stack
@@ -3909,6 +3955,13 @@ AUD                  13.792         0.033  2.5              1.149
 V2X                 -82.154         0.025  2.5             -5.135
 VIX                   8.592         0.025  2.5              0.537
 WHEAT                 1.379         0.033  2.5              0.115
+
+"`Position diags` is a diagnostic size baseline equal to `IDM * instrument weight *
+ Vol Scalar`. It ignores the combined forecast, so it shows how large an instrument
+ would be in the portfolio before directional conviction is applied. `Notional position`
+ is the actual target position after the subsystem position (which already includes the
+ combined forecast) has been scaled by instrument weight and IDM, and then optionally
+ adjusted by any portfolio risk scalar."
 
 
 ===============================================================================================

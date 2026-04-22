@@ -272,9 +272,11 @@ def _prompt_for_headless_plot_dir() -> Optional[Path]:
     return Path(response)
 
 
-def _add_text_page(instrument_code: str, info_lines: list[str], pdf_writer) -> None:
+def _add_paginated_text_pages(
+    title: str, info_lines: list[str], pdf_writer, lines_per_page: int = 45
+) -> None:
     """
-    Add a text-only page to the dashboard PDF with contract info.
+    Add one or more text-only pages to the dashboard PDF.
     """
     if pdf_writer is None:
         return
@@ -283,47 +285,8 @@ def _add_text_page(instrument_code: str, info_lines: list[str], pdf_writer) -> N
     except ImportError:
         return
 
-    fig = plt.figure(figsize=(8.5, 11))
-    ax = fig.add_subplot(111)
-    ax.axis("off")
-    ax.text(
-        0.02,
-        0.98,
-        "\n".join(info_lines),
-        va="top",
-        ha="left",
-        fontsize=10,
-        family="monospace",
-    )
-    fig.suptitle(
-        f"{instrument_code} contracts", y=0.995, fontsize=12, fontweight="bold"
-    )
-    pdf_writer.savefig(fig)
-    plt.close(fig)
-
-
-def _add_summary_pages(
-    all_reports: list[list[str]], pdf_writer, lines_per_page: int = 45
-) -> None:
-    """
-    Add a summary section with all instruments to the start of the PDF.
-    """
-    if pdf_writer is None or not all_reports:
-        return
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError:
-        return
-
-    # Flatten with blank lines between instruments
-    combined_lines: list[str] = []
-    for report in all_reports:
-        if combined_lines:
-            combined_lines.append("")  # blank separator
-        combined_lines.extend(report)
-
-    for start in range(0, len(combined_lines), lines_per_page):
-        page_lines = combined_lines[start : start + lines_per_page]
+    for start in range(0, len(info_lines), lines_per_page):
+        page_lines = info_lines[start : start + lines_per_page]
         fig = plt.figure(figsize=(8.5, 11))
         ax = fig.add_subplot(111)
         ax.axis("off")
@@ -336,13 +299,67 @@ def _add_summary_pages(
             fontsize=10,
             family="monospace",
         )
-        title = "Sampled contracts summary"
-        if len(combined_lines) > lines_per_page:
+        page_title = title
+        if len(info_lines) > lines_per_page:
             page_num = (start // lines_per_page) + 1
-            title = f"{title} (page {page_num})"
-        fig.suptitle(title, y=0.995, fontsize=12, fontweight="bold")
+            page_title = f"{title} (page {page_num})"
+        fig.suptitle(page_title, y=0.995, fontsize=12, fontweight="bold")
         pdf_writer.savefig(fig)
         plt.close(fig)
+
+
+def _build_dashboard_header_lines(
+    total_instruments_in_db: int,
+    selected_instruments: list[str],
+    selected_window_label: str,
+) -> list[str]:
+    """
+    Build the global report header shown in console and PDF output.
+
+    Args:
+        total_instruments_in_db: Total number of instruments in multiple prices.
+        selected_instruments: Instruments included in the current report.
+        selected_window_label: Human-readable selected data window label.
+
+    Returns:
+        Text lines for the report-wide header section.
+    """
+    selected_count = len(selected_instruments)
+    lines = [
+        f"Instruments in DB (multiple prices): {total_instruments_in_db}",
+        f"Instruments in this report: {selected_count}",
+        f"Selected data window: {selected_window_label}",
+    ]
+
+    if selected_count == 1:
+        lines.append(f"Selected instrument: {selected_instruments[0]}")
+    elif selected_count == total_instruments_in_db:
+        lines.append("Selected instruments: all available instruments")
+
+    return lines
+
+
+def _add_summary_pages(
+    all_reports: list[list[str]], pdf_writer, lines_per_page: int = 45
+) -> None:
+    """
+    Add a summary section with all instruments to the start of the PDF.
+    """
+    if pdf_writer is None or not all_reports:
+        return
+    # Flatten with blank lines between instruments
+    combined_lines: list[str] = []
+    for report in all_reports:
+        if combined_lines:
+            combined_lines.append("")  # blank separator
+        combined_lines.extend(report)
+
+    _add_paginated_text_pages(
+        title="Sampled contracts summary",
+        info_lines=combined_lines,
+        pdf_writer=pdf_writer,
+        lines_per_page=lines_per_page,
+    )
 
 
 def _add_sampled_index_pages(
@@ -354,38 +371,18 @@ def _add_sampled_index_pages(
     if pdf_writer is None or not collected_reports:
         return
 
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError:
-        return
-
     lines: list[str] = []
     for record in collected_reports:
         contracts = record.get("sampled_contracts") or []
         contract_str = ", ".join(str(c) for c in contracts) if contracts else "None"
         lines.append(f"{record['instrument_code']}: {contract_str}")
 
-    for start in range(0, len(lines), lines_per_page):
-        page_lines = lines[start : start + lines_per_page]
-        fig = plt.figure(figsize=(8.5, 11))
-        ax = fig.add_subplot(111)
-        ax.axis("off")
-        ax.text(
-            0.02,
-            0.98,
-            "\n".join(page_lines),
-            va="top",
-            ha="left",
-            fontsize=10,
-            family="monospace",
-        )
-        title = "Sampled contracts index"
-        if len(lines) > lines_per_page:
-            page_num = (start // lines_per_page) + 1
-            title = f"{title} (page {page_num})"
-        fig.suptitle(title, y=0.995, fontsize=12, fontweight="bold")
-        pdf_writer.savefig(fig)
-        plt.close(fig)
+    _add_paginated_text_pages(
+        title="Sampled contracts index",
+        info_lines=lines,
+        pdf_writer=pdf_writer,
+        lines_per_page=lines_per_page,
+    )
 
 
 def _format_contract_report(
@@ -841,6 +838,11 @@ def list_sampled_contracts(
         selected_window_label = _format_selected_window_label(
             selected_start_date, selected_end_date
         )
+        dashboard_header_lines = _build_dashboard_header_lines(
+            total_instruments_in_db=len(available_instruments),
+            selected_instruments=instrument_list,
+            selected_window_label=selected_window_label,
+        )
 
         should_build_report = selected_output_mode == OUTPUT_MODE_REPORT
         should_show_plots = plot or selected_output_mode == OUTPUT_MODE_TERMINAL
@@ -931,6 +933,11 @@ def list_sampled_contracts(
 
         # Write summary first, then figures
         if pdf_writer is not None:
+            _add_paginated_text_pages(
+                title="Sampled contracts overview",
+                info_lines=dashboard_header_lines,
+                pdf_writer=pdf_writer,
+            )
             _add_sampled_index_pages(collected_reports, pdf_writer)
             _add_summary_pages(
                 [r["report_lines"] for r in collected_reports], pdf_writer

@@ -43,7 +43,7 @@ class updateRollStatus:
 
         if len(instrument_list) == 0:
             self.data.log.debug(
-                "No instruments near expiry requiring roll status update"
+                "No instruments near their desired roll date requiring roll status update"
             )
             return success
 
@@ -95,7 +95,7 @@ class updateRollStatus:
 
         if auto_parameters.default_roll_state_if_undecided == ASK_FOR_STATE:
             self.data.log.debug(
-                "Default roll state set to Ask; scheduled updater will pick automatic fallback (Force or Force_Outright based on time to expiry)"
+                "Default roll state set to Ask; scheduled updater will pick automatic fallback (Force before the desired roll date, Force_Outright on or after it)"
             )
 
         default_state = auto_parameters.default_roll_state_if_undecided
@@ -151,7 +151,7 @@ class updateRollStatus:
         roll_data,
         auto_parameters,
     ) -> RollState:
-        if self._is_contract_expiry_imminent(
+        if self._is_at_or_past_desired_roll_date(
             roll_data=roll_data, auto_parameters=auto_parameters
         ):
             return RollState.Force_Outright
@@ -159,5 +159,5 @@ class updateRollStatus:
         return RollState.Force
 
     @staticmethod
-    def _is_contract_expiry_imminent(roll_data, auto_parameters) -> bool:
-        return roll_data.days_until_expiry <= auto_parameters.near_expiry_days
+    def _is_at_or_past_desired_roll_date(roll_data, auto_parameters) -> bool:
+        return roll_data.days_until_roll <= 0

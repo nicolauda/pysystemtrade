@@ -62,10 +62,10 @@ def _build_roll_data(
     )
 
 
-def test_fallback_roll_state_uses_force_outright_when_expiry_imminent():
+def test_fallback_roll_state_uses_force_outright_on_desired_roll_date():
     obj = _build_update_roll_status({})
     params = _build_auto_roll_parameters()
-    roll_data = _build_roll_data("RUBBER", days_until_expiry=2)
+    roll_data = _build_roll_data("RUBBER", days_until_roll=0)
 
     state = obj._fallback_roll_state_for_undecided(
         roll_data=roll_data,
@@ -75,10 +75,10 @@ def test_fallback_roll_state_uses_force_outright_when_expiry_imminent():
     assert state is RollState.Force_Outright
 
 
-def test_fallback_roll_state_uses_force_when_expiry_not_imminent():
+def test_fallback_roll_state_uses_force_before_desired_roll_date():
     obj = _build_update_roll_status({})
     params = _build_auto_roll_parameters()
-    roll_data = _build_roll_data("IRON", days_until_expiry=11)
+    roll_data = _build_roll_data("IRON", days_until_roll=1)
 
     state = obj._fallback_roll_state_for_undecided(
         roll_data=roll_data,
@@ -88,10 +88,10 @@ def test_fallback_roll_state_uses_force_when_expiry_not_imminent():
     assert state is RollState.Force
 
 
-def test_fallback_roll_state_uses_force_outright_on_threshold_boundary():
+def test_fallback_roll_state_uses_force_outright_after_desired_roll_date():
     obj = _build_update_roll_status({})
     params = _build_auto_roll_parameters()
-    roll_data = _build_roll_data("IRON", days_until_expiry=10)
+    roll_data = _build_roll_data("IRON", days_until_roll=-1)
 
     state = obj._fallback_roll_state_for_undecided(
         roll_data=roll_data,

@@ -1,6 +1,11 @@
 from copy import copy
 
 from sysobjects.production.roll_state import ALL_ROLL_INSTRUMENTS
+from sysproduction.reporting.data.price_quality import (
+    ALL_DB_PRICE_QUALITY_INSTRUMENTS,
+    DEFAULT_DB_PRICE_QUALITY_CALENDAR_DAYS,
+    DEFAULT_DB_PRICE_QUALITY_MIN_BAD_DAYS,
+)
 
 
 class reportConfig(object):
@@ -145,6 +150,15 @@ account_curve_report_config = reportConfig(
     output="email",
 )
 
+db_price_quality_report_config = reportConfig(
+    title="DB price quality report",
+    function="sysproduction.reporting.db_price_quality_report.db_price_quality_report",
+    instrument_code=ALL_DB_PRICE_QUALITY_INSTRUMENTS,
+    calendar_days_back=DEFAULT_DB_PRICE_QUALITY_CALENDAR_DAYS,
+    min_bad_days=DEFAULT_DB_PRICE_QUALITY_MIN_BAD_DAYS,
+    output="email",
+)
+
 ## The reports will be run in this order
 report_config_defaults = dict(
     slippage_report=slippage_report_config,
@@ -164,4 +178,5 @@ report_config_defaults = dict(
     market_monitor_report=market_monitor_report_config,
     account_curve_report=account_curve_report_config,
     commission_report=commission_report_config,
+    db_price_quality_report=db_price_quality_report_config,
 )

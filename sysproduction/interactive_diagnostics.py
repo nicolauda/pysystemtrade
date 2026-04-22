@@ -65,6 +65,12 @@ from sysproduction.reporting.report_configs import (
     market_monitor_report_config,
     account_curve_report_config,
     commission_report_config,
+    db_price_quality_report_config,
+)
+from sysproduction.reporting.data.price_quality import (
+    ALL_DB_PRICE_QUALITY_INSTRUMENTS,
+    DEFAULT_DB_PRICE_QUALITY_CALENDAR_DAYS,
+    DEFAULT_DB_PRICE_QUALITY_MIN_BAD_DAYS,
 )
 
 
@@ -135,6 +141,7 @@ nested_menu_of_options = {
         74: "Remove markets",
         75: "Market monitor",
         76: "P&L account curve",
+        77: "DB price quality",
     },
 }
 
@@ -291,6 +298,51 @@ def account_curve_report(data: dataBlob):
 
     report_config = email_or_print_or_file(account_curve_report_config)
     report_config.modify_kwargs(start_date=start_date, end_date=end_date)
+    run_report(report_config, data=data)
+
+
+def db_price_quality_report(data):
+    instrument_code = get_valid_instrument_code_from_user(
+        data,
+        allow_all=True,
+        all_code=ALL_DB_PRICE_QUALITY_INSTRUMENTS,
+    )
+    scope_option = get_input_from_user_and_convert_to_type(
+        "1: Last %d calendar days, 2: custom dates, 3: full history?"
+        % DEFAULT_DB_PRICE_QUALITY_CALENDAR_DAYS,
+        type_expected=int,
+        allow_default=True,
+        default_value=1,
+        default_str="Last %d days" % DEFAULT_DB_PRICE_QUALITY_CALENDAR_DAYS,
+    )
+    if scope_option == 2:
+        start_date, end_date = get_report_dates()
+        calendar_days_back = arg_not_supplied
+    elif scope_option == 3:
+        start_date = arg_not_supplied
+        end_date = arg_not_supplied
+        calendar_days_back = arg_not_supplied
+    else:
+        start_date = arg_not_supplied
+        end_date = arg_not_supplied
+        calendar_days_back = DEFAULT_DB_PRICE_QUALITY_CALENDAR_DAYS
+
+    min_bad_days = get_input_from_user_and_convert_to_type(
+        "Minimum bad business days before an instrument is actionable?",
+        type_expected=int,
+        allow_default=True,
+        default_value=DEFAULT_DB_PRICE_QUALITY_MIN_BAD_DAYS,
+        default_str=str(DEFAULT_DB_PRICE_QUALITY_MIN_BAD_DAYS),
+    )
+
+    report_config = email_or_print_or_file(db_price_quality_report_config)
+    report_config.modify_kwargs(
+        instrument_code=instrument_code,
+        start_date=start_date,
+        end_date=end_date,
+        calendar_days_back=calendar_days_back,
+        min_bad_days=min_bad_days,
+    )
     run_report(report_config, data=data)
 
 
@@ -757,6 +809,7 @@ dict_of_functions = {
     74: remove_markets_report,
     75: market_monitor_report,
     76: account_curve_report,
+    77: db_price_quality_report,
 }
 
 if __name__ == "__main__":

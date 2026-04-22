@@ -131,6 +131,8 @@ process_configuration_methods:
       max_executions: 1
     account_curve_report:
       max_executions: 1
+    db_price_quality_report:
+      max_executions: 1
   run_backups:
     backup_db_to_csv:
       max_executions: 1

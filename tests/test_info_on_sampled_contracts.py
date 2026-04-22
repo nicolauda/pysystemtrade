@@ -4,6 +4,7 @@ from pandas import DataFrame, DatetimeIndex, Series
 from sysproduction.info_on_sampled_contracts import (
     OUTPUT_MODE_REPORT,
     OUTPUT_MODE_TERMINAL,
+    _build_dashboard_header_lines,
     _extract_instrument_metadata_from_df,
     _filter_adjusted_prices_to_date_window,
     _format_contract_report,
@@ -161,6 +162,19 @@ def test_extract_instrument_metadata_from_df_returns_none_for_missing_instrument
     metadata = _extract_instrument_metadata_from_df("BRE", instrument_metadata_df)
 
     assert metadata is None
+
+
+def test_build_dashboard_header_lines_includes_total_instruments_in_db():
+    header_lines = _build_dashboard_header_lines(
+        total_instruments_in_db=2,
+        selected_instruments=["SOFR", "US10"],
+        selected_window_label="all available data",
+    )
+
+    assert "Instruments in DB (multiple prices): 2" in header_lines
+    assert "Instruments in this report: 2" in header_lines
+    assert "Selected data window: all available data" in header_lines
+    assert "Selected instruments: all available instruments" in header_lines
 
 
 def test_format_contract_report_does_not_include_total_instruments_in_db():

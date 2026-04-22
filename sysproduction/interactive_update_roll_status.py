@@ -216,7 +216,7 @@ def update_roll_status_full_auto(api: reportingApi, data: dataBlob):
 
 def get_days_ahead_to_consider_when_auto_cycling() -> int:
     days_ahead = get_input_from_user_and_convert_to_type(
-        "How many days ahead should I look for expiries?",
+        "How many days ahead should I look for desired roll dates?",
         type_expected=int,
         allow_default=True,
         default_value=10,
@@ -239,7 +239,7 @@ def get_list_of_instruments_to_auto_cycle(data: dataBlob, days_ahead: int = 10) 
     ]
 
     print_with_landing_strips_around(
-        "Identified following instruments that are near expiry %s"
+        "Identified following instruments that are near their desired roll date %s"
         % str(instrument_list)
     )
 
@@ -249,27 +249,23 @@ def get_list_of_instruments_to_auto_cycle(data: dataBlob, days_ahead: int = 10) 
 def include_instrument_in_auto_cycle(
     data: dataBlob, instrument_code: str, days_ahead: int = 10
 ) -> bool:
-    days_until_expiry = days_until_earliest_expiry(data, instrument_code)
-    return days_until_expiry <= days_ahead
+    days_until_roll = days_until_desired_roll_date(data, instrument_code)
+    return days_until_roll <= days_ahead
 
 
-def days_until_earliest_expiry(data: dataBlob, instrument_code: str) -> int:
+def days_until_desired_roll_date(data: dataBlob, instrument_code: str) -> int:
     data_contracts = dataContracts(data)
     log_attrs = {"instrument_code": instrument_code, "method": "temp"}
 
     try:
-        carry_days = data_contracts.days_until_carry_expiry(instrument_code)
-        roll_days = data_contracts.days_until_roll(instrument_code)
-        price_days = data_contracts.days_until_price_expiry(instrument_code)
+        return data_contracts.days_until_roll(instrument_code)
     except ContractNotFound as exc:
         data.log.warning(
-            "Skipping %s in auto roll cycle: missing contract data (%s)"
+            "Skipping %s in auto roll cycle: missing desired roll date (%s)"
             % (instrument_code, exc),
             **log_attrs,
         )
         return 10**9
-
-    return min([carry_days, roll_days, price_days])
 
 
 @dataclass
@@ -444,17 +440,22 @@ def describe_roll_rules_from_parameters(auto_parameters: autoRollParameters):
         % (auto_parameters.auto_roll_if_relative_volume_higher_than)
         + "  - if relative volume between current and forward contract > %f, and if absolute volume contracts>%d, then considered liquid\n\n"
         % (auto_parameters.min_relative_volume, auto_parameters.min_absolute_volume)
-        + "Forward is not liquid. Are we close to the roll point? (is distance to desired roll date<%d days)\n"
+        + "Window 1: days_until_roll > %d\n"
         % (auto_parameters.near_expiry_days)
-        + "   -  No, miles away from needing to roll. Trade as normal: NO_ROLL\n"
-        + "   -  Yes, going to roll quite soon. Roll status should be NO_OPEN\n\n "
-        + "Forward is liquid. Do we have a position on in the price contract??\n"
-        + "   - We have no position in the priced contract: ROLL ADJUSTED\n"
-        + "   - If we have a position on then:\n"
-        + "      - Do we have plenty of time? (is distance to desired roll date>%d days)?\n"
-        % auto_parameters.near_expiry_days
-        + "         - Yes, We have plenty of time PASSIVE ROLL\n"
-        + "         - No, we don't. %s\n"
+        + "   - priced flat + forward liquid: ROLL_ADJUSTED\n"
+        + "   - position held + forward liquid: PASSIVE\n"
+        + "   - forward not liquid: NO_ROLL\n\n"
+        + "Window 2: 0 < days_until_roll <= %d\n"
+        % (auto_parameters.near_expiry_days)
+        + "   - priced flat + forward liquid: ROLL_ADJUSTED\n"
+        + "   - priced flat + forward not liquid: NO_OPEN\n"
+        + "   - position held + forward liquid: FORCE\n"
+        + "   - position held + forward not liquid: NO_OPEN\n\n"
+        + "Window 3: days_until_roll <= 0\n"
+        + "   - priced flat: ROLL_ADJUSTED\n"
+        + "   - position held + forward liquid: FORCE_OUTRIGHT\n"
+        + "   - position held + forward not liquid: CLOSE\n\n"
+        + "%s\n"
         % describe_action_for_default_roll_state_if_undecided(auto_parameters)
     )
 
@@ -462,13 +463,11 @@ def describe_roll_rules_from_parameters(auto_parameters: autoRollParameters):
 def describe_action_for_default_roll_state_if_undecided(
     auto_parameters: autoRollParameters,
 ) -> str:
-    if auto_parameters.default_roll_state_if_undecided == ASK_FOR_STATE:
-        return "We will prompt user for required roll state"
-    else:
-        default_roll_state = auto_parameters.default_roll_state_if_undecided
-        if isinstance(default_roll_state, RollState):
-            default_roll_state = default_roll_state.name
-        return "Roll state will be set to %s automatically" % str(default_roll_state)
+    return (
+        "The legacy config value default_roll_state_if_undecided is retained for "
+        "compatibility, but the standard three-window auto-roll logic should no "
+        "longer produce undecided cases."
+    )
 
 
 def describe_action_for_auto_roll_expired(
@@ -530,7 +529,8 @@ def suggest_roll_state_for_instrument(
     forward_liquid = check_if_forward_liquid(
         roll_data=roll_data, auto_parameters=auto_parameters
     )
-    getting_close_to_desired_roll_date = check_if_getting_close_to_desired_roll_date(
+    in_hard_roll_window = check_if_at_or_past_desired_roll_date(roll_data=roll_data)
+    in_soft_roll_window = check_if_in_soft_roll_window(
         roll_data=roll_data, auto_parameters=auto_parameters
     )
     no_position_held = roll_data.position_priced_contract == 0
@@ -542,32 +542,38 @@ def suggest_roll_state_for_instrument(
         ## contract expired so roll regardless of liquidity
         return RollState.Roll_Adjusted
 
-    if forward_liquid:
+    if in_hard_roll_window:
         if no_position_held:
-            ## liquid forward, with no position
+            ## hard stop at desired roll date: advance prices if already flat
             return RollState.Roll_Adjusted
-        else:
-            ## liquid forward, with position held
-            if getting_close_to_desired_roll_date:
-                ## liquid forward, with position, close to expiry
-                ##   Up to the user to decide
-                return auto_parameters.default_roll_state_if_undecided
-            else:
-                ## liquid forward, with position held, not close to expiring
-                return RollState.Passive
-    else:
-        # forward illiquid
-        if getting_close_to_desired_roll_date:
-            ## forward illiquid and getting close
-            # We don't want to trade the forward - it's not liquid yet.
-            # And we don't want to open a position or increase it in the current
-            #   priced contract, since we will only have to close it again soon.
-            # But we do want to allow ourselves to close any position
-            #   we have in the current priced contract.
+
+        if forward_liquid:
+            return RollState.Force_Outright
+
+        return RollState.Close
+
+    if in_soft_roll_window:
+        if no_position_held:
+            if forward_liquid:
+                return RollState.Roll_Adjusted
+
             return RollState.No_Open
-        else:
-            ## forward illiquid and miles away. Don't roll yet.
-            return RollState.No_Roll
+
+        if forward_liquid:
+            return RollState.Force
+
+        return RollState.No_Open
+
+    if no_position_held:
+        if forward_liquid:
+            return RollState.Roll_Adjusted
+
+        return RollState.No_Roll
+
+    if forward_liquid:
+        return RollState.Passive
+
+    return RollState.No_Roll
 
 
 def check_if_forward_liquid(
@@ -594,12 +600,18 @@ def check_if_forward_liquid(
     return False
 
 
-def check_if_getting_close_to_desired_roll_date(
+def check_if_in_soft_roll_window(
     roll_data: RollDataWithStateReporting,
     auto_parameters: autoRollParameters,
 ):
-    ## close to desired roll date, not technically 'expiry'
-    return roll_data.days_until_roll < auto_parameters.near_expiry_days
+    ## soft window before the desired roll date, excluding the hard-stop day
+    return 0 < roll_data.days_until_roll <= auto_parameters.near_expiry_days
+
+
+def check_if_at_or_past_desired_roll_date(
+    roll_data: RollDataWithStateReporting,
+) -> bool:
+    return roll_data.days_until_roll <= 0
 
 
 def check_if_expired_and_auto_rolling_expired(
