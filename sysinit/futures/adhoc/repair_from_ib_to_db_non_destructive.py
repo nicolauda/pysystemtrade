@@ -20,7 +20,9 @@ from sysinit.futures.rollcalendars_from_db_prices_to_csv import (
     build_and_write_roll_calendar,
 )
 from sysobjects.contracts import futuresContract
+from sysobjects.adjusted_prices import futuresAdjustedPrices
 from sysobjects.futures_per_contract_prices import futuresContractPrices
+from sysobjects.multiple_prices import futuresMultiplePrices
 from sysobjects.roll_calendars import rollCalendar
 from sysproduction.data.broker import dataBroker
 from sysproduction.data.prices import diagPrices, updatePrices
@@ -303,11 +305,118 @@ def _rebuild_derived_data_for_instrument(instrument_code: str):
         f"added={calendar_outcome.rows_added}, "
         f"replaced={calendar_outcome.rows_replaced}"
     )
-    process_multiple_prices_single_instrument(
-        instrument_code=instrument_code,
-        adjust_calendar_to_prices=False,
+    csv_roll_calendars = csvRollCalendarData(arg_not_supplied)
+    roll_calendar = csv_roll_calendars.get_roll_calendar(instrument_code)
+    available_contract_codes = _contract_dates_with_price_data_for_instrument_code(
+        instrument_code
     )
-    process_adjusted_prices_single_instrument(instrument_code=instrument_code)
+    roll_calendar_for_multiple_prices = _trim_unavailable_leading_roll_calendar_rows(
+        roll_calendar,
+        available_contract_codes=available_contract_codes,
+    )
+    candidate_multiple_prices = process_multiple_prices_single_instrument(
+        instrument_code=instrument_code,
+        roll_calendar=roll_calendar_for_multiple_prices,
+        adjust_calendar_to_prices=False,
+        ADD_TO_DB=False,
+        ADD_TO_CSV=False,
+    )
+    with dataBlob(log_name=f"Repair-Derived-{instrument_code}") as data:
+        diag_prices = diagPrices(data)
+        existing_multiple_prices = diag_prices.get_multiple_prices(instrument_code)
+        merged_multiple_prices = _merge_multiple_prices_tail_only(
+            existing_multiple_prices=existing_multiple_prices,
+            candidate_multiple_prices=candidate_multiple_prices,
+        )
+
+        diag_prices.db_futures_multiple_prices_data.add_multiple_prices(
+            instrument_code,
+            merged_multiple_prices,
+            ignore_duplication=True,
+        )
+        candidate_adjusted_prices = process_adjusted_prices_single_instrument(
+            instrument_code=instrument_code,
+            multiple_prices=merged_multiple_prices,
+            ADD_TO_DB=False,
+            ADD_TO_CSV=False,
+        )
+        existing_adjusted_prices = diag_prices.get_adjusted_prices(instrument_code)
+        merged_adjusted_prices = _merge_adjusted_prices_tail_only(
+            existing_adjusted_prices=existing_adjusted_prices,
+            candidate_adjusted_prices=candidate_adjusted_prices,
+        )
+
+        diag_prices.db_futures_adjusted_prices_data.add_adjusted_prices(
+            instrument_code,
+            merged_adjusted_prices,
+            ignore_duplication=True,
+        )
+
+
+def _merge_multiple_prices_tail_only(
+    existing_multiple_prices: futuresMultiplePrices,
+    candidate_multiple_prices: futuresMultiplePrices,
+) -> futuresMultiplePrices:
+    """Replace only the rebuildable tail of multiple prices.
+
+    Args:
+        existing_multiple_prices: Current DB multiple prices.
+        candidate_multiple_prices: Freshly rebuilt recent tail.
+
+    Returns:
+        A merged series that preserves existing history strictly before the
+        candidate start timestamp, overwrites the candidate window, and keeps any
+        existing tail strictly after the candidate end timestamp.
+    """
+
+    existing_as_dataframe = pd.DataFrame(existing_multiple_prices).sort_index()
+    candidate_as_dataframe = pd.DataFrame(candidate_multiple_prices).sort_index()
+    if len(candidate_as_dataframe) == 0:
+        return futuresMultiplePrices(existing_as_dataframe)
+    if len(existing_as_dataframe) == 0:
+        return futuresMultiplePrices(candidate_as_dataframe)
+
+    candidate_start = candidate_as_dataframe.index.min()
+    candidate_end = candidate_as_dataframe.index.max()
+    preserved_prefix = existing_as_dataframe[existing_as_dataframe.index < candidate_start]
+    preserved_suffix = existing_as_dataframe[existing_as_dataframe.index > candidate_end]
+    merged_as_dataframe = pd.concat(
+        [preserved_prefix, candidate_as_dataframe, preserved_suffix], axis=0
+    )
+    merged_as_dataframe = merged_as_dataframe.sort_index()
+    merged_as_dataframe = merged_as_dataframe[
+        ~merged_as_dataframe.index.duplicated(keep="last")
+    ]
+
+    return futuresMultiplePrices(merged_as_dataframe)
+
+
+def _merge_adjusted_prices_tail_only(
+    existing_adjusted_prices: futuresAdjustedPrices,
+    candidate_adjusted_prices: futuresAdjustedPrices,
+) -> futuresAdjustedPrices:
+    """Replace only the rebuildable tail of adjusted prices."""
+
+    existing_as_series = pd.Series(existing_adjusted_prices).sort_index()
+    candidate_as_series = pd.Series(candidate_adjusted_prices).sort_index()
+    if len(candidate_as_series) == 0:
+        return futuresAdjustedPrices(existing_as_series)
+    if len(existing_as_series) == 0:
+        return futuresAdjustedPrices(candidate_as_series)
+
+    candidate_start = candidate_as_series.index.min()
+    candidate_end = candidate_as_series.index.max()
+    preserved_prefix = existing_as_series[existing_as_series.index < candidate_start]
+    preserved_suffix = existing_as_series[existing_as_series.index > candidate_end]
+    merged_as_series = pd.concat(
+        [preserved_prefix, candidate_as_series, preserved_suffix], axis=0
+    )
+    merged_as_series = merged_as_series.sort_index()
+    merged_as_series = merged_as_series[
+        ~merged_as_series.index.duplicated(keep="last")
+    ]
+
+    return futuresAdjustedPrices(merged_as_series)
 
 
 def _empty_roll_calendar() -> rollCalendar:
@@ -417,6 +526,105 @@ def _drop_duplicate_transition_rows_keep_first(calendar: rollCalendar) -> rollCa
     deduplicated_calendar = calendar_dataframe.loc[kept_row_indices].copy()
     deduplicated_calendar = deduplicated_calendar.sort_index()
     return rollCalendar(deduplicated_calendar)
+
+
+def _roll_calendar_row_is_buildable_from_available_contracts(
+    calendar_row: pd.Series,
+    *,
+    is_last_row: bool,
+    available_contract_codes: set[str],
+) -> bool:
+    """Return whether one roll-calendar row can be rebuilt from current DB prices.
+
+    Args:
+        calendar_row: Row to validate.
+        is_last_row: Whether the row is the final row in the calendar.
+        available_contract_codes: Contract date strings that currently have price
+            data in DB.
+
+    Returns:
+        `True` if the row has the contract coverage required by the multiple-price
+        rebuild. The last row only requires the current contract because the builder
+        already tolerates missing next/carry there.
+    """
+
+    current_contract = _normalise_contract_code(calendar_row.get("current_contract"))
+    next_contract = _normalise_contract_code(calendar_row.get("next_contract"))
+    carry_contract = _normalise_contract_code(calendar_row.get("carry_contract"))
+
+    if current_contract is None or current_contract not in available_contract_codes:
+        return False
+    if is_last_row:
+        return True
+
+    required_contracts = (next_contract, carry_contract)
+    return all(
+        contract is not None and contract in available_contract_codes
+        for contract in required_contracts
+    )
+
+
+def _trim_unavailable_leading_roll_calendar_rows(
+    calendar: rollCalendar,
+    *,
+    available_contract_codes: set[str],
+) -> rollCalendar:
+    """Drop the stale leading prefix that current DB prices cannot rebuild.
+
+    Conservative calendar merge intentionally keeps non-regenerated dates, but this
+    can preserve an old prefix whose contracts no longer have any per-contract price
+    data in DB. That prefix is harmless until multiple prices are rebuilt, where it
+    can surface as a "missing contract in middle of roll calendar" failure. Trim only
+    the leading unavailable rows and keep the remaining manual/conservative rows.
+
+    Args:
+        calendar: Roll calendar to trim.
+        available_contract_codes: Contract date strings with price data in DB.
+
+    Returns:
+        A `rollCalendar` starting from the first row that the current DB data can
+        rebuild. If no row is rebuildable, returns an empty roll calendar.
+    """
+
+    calendar_norm = _drop_duplicate_transition_rows_keep_first(calendar)
+    if len(calendar_norm) == 0:
+        return _empty_roll_calendar()
+    if len(available_contract_codes) == 0:
+        return _empty_roll_calendar()
+
+    calendar_dataframe = pd.DataFrame(calendar_norm).sort_index()
+    total_rows = len(calendar_dataframe.index)
+    first_valid_position = None
+
+    for position, (_, calendar_row) in enumerate(calendar_dataframe.iterrows()):
+        is_last_row = position == total_rows - 1
+        if _roll_calendar_row_is_buildable_from_available_contracts(
+            calendar_row,
+            is_last_row=is_last_row,
+            available_contract_codes=available_contract_codes,
+        ):
+            first_valid_position = position
+            break
+
+    if first_valid_position is None:
+        return _empty_roll_calendar()
+
+    trimmed_calendar = calendar_dataframe.iloc[first_valid_position:].copy()
+    return rollCalendar(trimmed_calendar)
+
+
+def _contract_dates_with_price_data_for_instrument_code(
+    instrument_code: str,
+) -> set[str]:
+    """Return the set of contract dates that currently have DB price data."""
+
+    with dataBlob(log_name=f"Repair-RollCalendar-{instrument_code}") as data:
+        diag_prices = diagPrices(data)
+        contract_dates = diag_prices.contract_dates_with_price_data_for_instrument_code(
+            instrument_code
+        )
+
+    return set(contract_dates)
 
 
 def _merge_roll_calendars_conservative(

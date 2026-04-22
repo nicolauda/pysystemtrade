@@ -2,8 +2,10 @@ import pandas as pd
 
 from syscore.dateutils import DAILY_PRICE_FREQ, HOURLY_FREQ
 from sysinit.futures.adhoc import repair_from_ib_to_db_non_destructive as ib_repair
+from sysobjects.adjusted_prices import futuresAdjustedPrices
 from sysobjects.contracts import futuresContract
 from sysobjects.futures_per_contract_prices import futuresContractPrices
+from sysobjects.multiple_prices import futuresMultiplePrices
 from sysobjects.roll_calendars import rollCalendar
 
 
@@ -153,6 +155,35 @@ def _empty_roll_calendar() -> rollCalendar:
     )
 
 
+def _make_multiple_prices(
+    rows: list[tuple[str, float, float, float, str, str, str]],
+) -> futuresMultiplePrices:
+    dataframe = pd.DataFrame(
+        {
+            "PRICE": [price for _, price, *_ in rows],
+            "CARRY": [carry for _, _, carry, *_ in rows],
+            "FORWARD": [forward for _, _, _, forward, *_ in rows],
+            "PRICE_CONTRACT": [price_contract for _, _, _, _, price_contract, *_ in rows],
+            "CARRY_CONTRACT": [
+                carry_contract for _, _, _, _, _, carry_contract, _ in rows
+            ],
+            "FORWARD_CONTRACT": [
+                forward_contract for _, _, _, _, _, _, forward_contract in rows
+            ],
+        },
+        index=pd.to_datetime([timestamp for timestamp, *_ in rows]),
+    )
+    return futuresMultiplePrices(dataframe)
+
+
+def _make_adjusted_prices(rows: list[tuple[str, float]]) -> futuresAdjustedPrices:
+    series = pd.Series(
+        [price for _, price in rows],
+        index=pd.to_datetime([timestamp for timestamp, _ in rows]),
+    )
+    return futuresAdjustedPrices(series)
+
+
 def test_merge_roll_calendars_conservative_updates_available_dates_only():
     existing = _make_roll_calendar(
         [
@@ -221,6 +252,84 @@ def test_merge_roll_calendars_conservative_drops_duplicate_transitions():
     ]
 
 
+def test_trim_unavailable_leading_roll_calendar_rows_drops_stale_prefix():
+    calendar = _make_roll_calendar(
+        [
+            ("2025-01-28 21:00:01", "20250300", "20250400", "20250200"),
+            ("2025-02-14 23:00:01", "20250400", "20250500", "20250300"),
+            ("2025-03-24 20:00:01", "20250500", "20250600", "20250400"),
+            ("2025-04-10 20:00:01", "20250600", "20250700", "20250500"),
+            ("2025-05-23 23:00:00", "20250700", "20250800", "20250600"),
+        ]
+    )
+
+    trimmed_calendar = ib_repair._trim_unavailable_leading_roll_calendar_rows(
+        calendar,
+        available_contract_codes={"20250500", "20250600", "20250700", "20250800"},
+    )
+
+    assert list(trimmed_calendar.index) == [
+        pd.Timestamp("2025-04-10 20:00:01"),
+        pd.Timestamp("2025-05-23 23:00:00"),
+    ]
+
+
+def test_merge_multiple_prices_tail_only_preserves_existing_history():
+    existing = _make_multiple_prices(
+        [
+            ("2020-01-01 00:00:00", 100.0, 99.0, 101.0, "20200300", "20191200", "20200600"),
+            ("2020-01-02 00:00:00", 101.0, 100.0, 102.0, "20200300", "20191200", "20200600"),
+            ("2020-01-03 00:00:00", 102.0, 101.0, 103.0, "20200300", "20191200", "20200600"),
+            ("2020-01-04 00:00:00", 103.0, 102.0, 104.0, "20200300", "20191200", "20200600"),
+        ]
+    )
+    candidate = _make_multiple_prices(
+        [
+            ("2020-01-03 00:00:00", 202.0, 201.0, 203.0, "20200600", "20200300", "20200900"),
+            ("2020-01-04 00:00:00", 203.0, 202.0, 204.0, "20200600", "20200300", "20200900"),
+        ]
+    )
+
+    merged = ib_repair._merge_multiple_prices_tail_only(existing, candidate)
+    merged_as_dataframe = pd.DataFrame(merged)
+
+    assert len(merged_as_dataframe) == 4
+    assert merged_as_dataframe.loc[pd.Timestamp("2020-01-01 00:00:00"), "PRICE"] == 100.0
+    assert (
+        merged_as_dataframe.loc[pd.Timestamp("2020-01-02 00:00:00"), "PRICE_CONTRACT"]
+        == "20200300"
+    )
+    assert merged_as_dataframe.loc[pd.Timestamp("2020-01-03 00:00:00"), "PRICE"] == 202.0
+    assert (
+        merged_as_dataframe.loc[pd.Timestamp("2020-01-04 00:00:00"), "PRICE_CONTRACT"]
+        == "20200600"
+    )
+
+
+def test_merge_adjusted_prices_tail_only_preserves_existing_history():
+    existing = _make_adjusted_prices(
+        [
+            ("2020-01-01 00:00:00", 100.0),
+            ("2020-01-02 00:00:00", 101.0),
+            ("2020-01-03 00:00:00", 102.0),
+            ("2020-01-04 00:00:00", 103.0),
+        ]
+    )
+    candidate = _make_adjusted_prices(
+        [
+            ("2020-01-03 00:00:00", 202.0),
+            ("2020-01-04 00:00:00", 203.0),
+        ]
+    )
+
+    merged = ib_repair._merge_adjusted_prices_tail_only(existing, candidate)
+
+    assert merged.loc[pd.Timestamp("2020-01-01 00:00:00")] == 100.0
+    assert merged.loc[pd.Timestamp("2020-01-02 00:00:00")] == 101.0
+    assert merged.loc[pd.Timestamp("2020-01-03 00:00:00")] == 202.0
+    assert merged.loc[pd.Timestamp("2020-01-04 00:00:00")] == 203.0
+
+
 def test_build_roll_calendar_writes_when_only_duplicate_transitions_are_removed(
     monkeypatch,
 ):
@@ -274,8 +383,72 @@ def test_build_roll_calendar_writes_when_only_duplicate_transitions_are_removed(
     ]
 
 
+def test_build_roll_calendar_trims_stale_leading_prefix_before_write(monkeypatch):
+    class _FakeCsvRollCalendars:
+        def __init__(self):
+            self.written_calendar = None
+            self._existing = _make_roll_calendar(
+                [
+                    ("2025-01-28 21:00:01", "20250300", "20250400", "20250200"),
+                    ("2025-02-14 23:00:01", "20250400", "20250500", "20250300"),
+                    ("2025-03-24 20:00:01", "20250500", "20250600", "20250400"),
+                    ("2025-04-10 20:00:01", "20250600", "20250700", "20250500"),
+                    ("2025-05-23 23:00:00", "20250700", "20250800", "20250600"),
+                ]
+            )
+
+        def is_code_in_data(self, instrument_code: str) -> bool:
+            return True
+
+        def get_roll_calendar(self, instrument_code: str) -> rollCalendar:
+            return self._existing
+
+        def add_roll_calendar(
+            self,
+            instrument_code: str,
+            roll_calendar: rollCalendar,
+            ignore_duplication: bool = True,
+        ):
+            self.written_calendar = roll_calendar
+
+    fake_csv = _FakeCsvRollCalendars()
+
+    monkeypatch.setattr(ib_repair, "csvRollCalendarData", lambda *_: fake_csv)
+    monkeypatch.setattr(
+        ib_repair,
+        "build_and_write_roll_calendar",
+        lambda **_: _make_roll_calendar(
+            [
+                ("2025-04-23 23:00:00", "20250600", "20250700", "20250500"),
+                ("2025-05-23 23:00:00", "20250700", "20250800", "20250600"),
+            ]
+        ),
+    )
+    outcome = ib_repair._build_and_write_roll_calendar_conservative("GAS_US_mini")
+
+    assert outcome.merged_rows == 5
+    assert fake_csv.written_calendar is not None
+    written_calendar = pd.DataFrame(fake_csv.written_calendar)
+    assert list(written_calendar.index) == [
+        pd.Timestamp("2025-01-28 21:00:01"),
+        pd.Timestamp("2025-02-14 23:00:01"),
+        pd.Timestamp("2025-03-24 20:00:01"),
+        pd.Timestamp("2025-04-10 20:00:01"),
+        pd.Timestamp("2025-05-23 23:00:00"),
+    ]
+
+
 def test_rebuild_derived_data_uses_existing_calendar_dates(monkeypatch):
     captured_call = {}
+    stored_roll_calendar = _make_roll_calendar(
+        [
+            ("2025-01-28 21:00:01", "20250300", "20250400", "20250200"),
+            ("2025-02-14 23:00:01", "20250400", "20250500", "20250300"),
+            ("2025-03-24 20:00:01", "20250500", "20250600", "20250400"),
+            ("2025-04-10 20:00:01", "20250600", "20250700", "20250500"),
+            ("2025-05-23 23:00:00", "20250700", "20250800", "20250600"),
+        ]
+    )
 
     def _fake_build_and_write_roll_calendar_conservative(instrument_code: str):
         return ib_repair.RollCalendarMergeOutcome(
@@ -286,13 +459,78 @@ def test_rebuild_derived_data_uses_existing_calendar_dates(monkeypatch):
             rows_replaced=0,
         )
 
+    candidate_multiple_prices = _make_multiple_prices(
+        [
+            ("2025-04-10 20:00:01", 10.0, 9.0, 11.0, "20250600", "20250500", "20250700"),
+            ("2025-05-23 23:00:00", 20.0, 19.0, 21.0, "20250700", "20250600", "20250800"),
+        ]
+    )
+    candidate_adjusted_prices = _make_adjusted_prices(
+        [
+            ("2025-04-10 20:00:01", 110.0),
+            ("2025-05-23 23:00:00", 120.0),
+        ]
+    )
+    existing_multiple_prices = _make_multiple_prices(
+        [
+            ("1990-05-22 05:00:00", 1.6, 1.5, 1.7, "19900900", "19900700", "19901000"),
+            ("2025-06-01 00:00:00", 30.0, 29.0, 31.0, "20250800", "20250700", "20250900"),
+        ]
+    )
+    existing_adjusted_prices = _make_adjusted_prices(
+        [
+            ("1990-05-22 05:00:00", 23.9),
+            ("2025-06-01 00:00:00", 130.0),
+        ]
+    )
+
+    class _FakeDerivedStore:
+        def __init__(self):
+            self.written = None
+
+        def add_multiple_prices(self, instrument_code, prices, ignore_duplication=True):
+            self.written = (instrument_code, prices)
+
+        def add_adjusted_prices(self, instrument_code, prices, ignore_duplication=True):
+            self.written = (instrument_code, prices)
+
+    class _FakeDiagPricesForDerivedRebuild:
+        def __init__(self, data):
+            self.db_futures_multiple_prices_data = _FakeDerivedStore()
+            self.db_futures_adjusted_prices_data = _FakeDerivedStore()
+
+        def get_multiple_prices(self, instrument_code: str):
+            return existing_multiple_prices
+
+        def get_adjusted_prices(self, instrument_code: str):
+            return existing_adjusted_prices
+
+    class _FakeDataBlob:
+        def __init__(self, *_, **__):
+            pass
+
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    fake_diag_prices = _FakeDiagPricesForDerivedRebuild(None)
+
     def _fake_process_multiple_prices_single_instrument(
         instrument_code: str,
         adjust_calendar_to_prices: bool = True,
+        roll_calendar=None,
         **_,
     ):
         captured_call["instrument_code"] = instrument_code
         captured_call["adjust_calendar_to_prices"] = adjust_calendar_to_prices
+        captured_call["roll_calendar_index"] = list(pd.DataFrame(roll_calendar).index)
+        return candidate_multiple_prices
+
+    class _FakeCsvRollCalendars:
+        def get_roll_calendar(self, instrument_code: str) -> rollCalendar:
+            return stored_roll_calendar
 
     monkeypatch.setattr(
         ib_repair,
@@ -307,7 +545,15 @@ def test_rebuild_derived_data_uses_existing_calendar_dates(monkeypatch):
     monkeypatch.setattr(
         ib_repair,
         "process_adjusted_prices_single_instrument",
-        lambda instrument_code: None,
+        lambda instrument_code, multiple_prices, **_: candidate_adjusted_prices,
+    )
+    monkeypatch.setattr(ib_repair, "csvRollCalendarData", lambda *_: _FakeCsvRollCalendars())
+    monkeypatch.setattr(ib_repair, "dataBlob", _FakeDataBlob)
+    monkeypatch.setattr(ib_repair, "diagPrices", lambda data=None: fake_diag_prices)
+    monkeypatch.setattr(
+        ib_repair,
+        "_contract_dates_with_price_data_for_instrument_code",
+        lambda instrument_code: {"20250500", "20250600", "20250700", "20250800"},
     )
 
     ib_repair._rebuild_derived_data_for_instrument("KOSDAQ")
@@ -315,4 +561,22 @@ def test_rebuild_derived_data_uses_existing_calendar_dates(monkeypatch):
     assert captured_call == {
         "instrument_code": "KOSDAQ",
         "adjust_calendar_to_prices": False,
+        "roll_calendar_index": [
+            pd.Timestamp("2025-04-10 20:00:01"),
+            pd.Timestamp("2025-05-23 23:00:00"),
+        ],
     }
+    written_multiple = pd.DataFrame(fake_diag_prices.db_futures_multiple_prices_data.written[1])
+    written_adjusted = pd.Series(fake_diag_prices.db_futures_adjusted_prices_data.written[1])
+    assert list(written_multiple.index) == [
+        pd.Timestamp("1990-05-22 05:00:00"),
+        pd.Timestamp("2025-04-10 20:00:01"),
+        pd.Timestamp("2025-05-23 23:00:00"),
+        pd.Timestamp("2025-06-01 00:00:00"),
+    ]
+    assert list(written_adjusted.index) == [
+        pd.Timestamp("1990-05-22 05:00:00"),
+        pd.Timestamp("2025-04-10 20:00:01"),
+        pd.Timestamp("2025-05-23 23:00:00"),
+        pd.Timestamp("2025-06-01 00:00:00"),
+    ]
