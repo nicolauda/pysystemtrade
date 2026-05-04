@@ -211,12 +211,21 @@ def _add_dummy_period_if_required(
 ):
     if date_method in ["rolling", "expanding"]:
         # add on a dummy date for the first year, when we have no data
+        if len(list_of_starting_dates_per_period) == 0:
+            return periods
+        # When the calendar span is shorter than one interval, the main loop
+        # uses range(...)[1:-1] and produces no periods; there is only one
+        # boundary in list_of_starting_dates_per_period — index [1] does not exist.
+        if len(list_of_starting_dates_per_period) < 2:
+            period_end_for_dummy = list_of_starting_dates_per_period[0]
+        else:
+            period_end_for_dummy = list_of_starting_dates_per_period[1]
         periods = [
             fitDates(
                 start_date,
                 start_date,
                 start_date,
-                list_of_starting_dates_per_period[1],
+                period_end_for_dummy,
                 no_data=True,
             )
         ] + periods
