@@ -1,5 +1,8 @@
 [build-system]
-requires = ["setuptools >= 61.0"]
+requires = [
+    "setuptools >= 61.0",
+    "setuptools-scm >= 8.0"
+]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -23,7 +26,7 @@ dependencies = [
     "numpy>=1.26,<2",
     "scipy>=1.0.0",
     "pymongo==4.6.3",
-    "ib-insync==0.9.86",
+    "ib_async>=2,<3",
     "psutil==7.2.1",
     "Flask>=2.0.1",
     "Werkzeug>=2.0.1",
@@ -48,8 +51,11 @@ find = {}
 
 [tool.setuptools.package-data]
 "data" = ["*.csv"]
+"data.futures" = ["*.csv"]
 "private" = ["*.yaml"]
-"sysbrokers" = ["*.csv", "*.yaml"]
+"sysbrokers" = ["*.csv"]
+"sysbrokers.IB" = ["*.yaml"]
+"sysbrokers.IB.config" = ["*.csv"]
 "syscontrol" = ["*.yaml"]
 "sysdata" = ["*.csv"]
 "sysdata.config" = ["*.yaml"]

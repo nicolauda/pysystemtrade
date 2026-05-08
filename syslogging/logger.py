@@ -1,3 +1,4 @@
+from pathlib import Path
 import os
 import sys
 import socket
@@ -99,17 +100,23 @@ def _configure_sim():
 def _configure_prod(logging_config_file):
     print(f"Attempting to configure prod logging from {logging_config_file}")
     config_path = resolve_path_and_filename_for_package(logging_config_file)
-    if os.path.exists(config_path):
+    if Path(config_path).exists():
         try:
             config = parse_config(path=config_path)
-            host, port = _get_log_server_config(config)
             try:
-                _check_log_server(host, port)
-            except BlockingIOError:
-                print(f"Log server detected OK at {host}:{port}")
-            except (ConnectionResetError, ConnectionRefusedError):
-                print(f"Cannot connect to log server at {host}:{port}, is it running?")
-                raise
+                host, port = _get_log_server_config(config)
+            except KeyError:
+                print("No log server configured")
+            else:
+                try:
+                    _check_log_server(host, port)
+                except BlockingIOError:
+                    print(f"Log server detected OK at {host}:{port}")
+                except (ConnectionResetError, ConnectionRefusedError):
+                    print(
+                        f"Cannot connect to log server at {host}:{port}, is it running?"
+                    )
+                    raise
             logging.config.dictConfig(config)
             syslogging.logging_configured = True
         except Exception as exc:
