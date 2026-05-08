@@ -2,7 +2,10 @@
 
 import datetime as dt
 
-from sysquant.fitting_dates import EXPANDING, generate_fitting_dates_given_start_and_end_date
+from sysquant.fitting_dates import (
+    EXPANDING,
+    generate_fitting_dates_given_start_and_end_date,
+)
 
 
 def test_expanding_dummy_period_when_single_boundary():
