@@ -9,7 +9,10 @@ production_config = get_production_config()
 
 def get_main_backup_directory():
     ans = production_config.get_element("offsystem_backup_directory")
-    return get_resolved_pathname(ans)
+    resolved_path = get_resolved_pathname(ans)
+    os.makedirs(resolved_path, exist_ok=True)
+
+    return resolved_path
 
 
 def get_csv_backup_directory():

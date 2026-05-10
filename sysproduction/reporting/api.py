@@ -325,11 +325,19 @@ class reportingApi(object):
 
     def get_correlations_for_configured_duplicates(self) -> table:
         pairs = generate_duplicate_pairs(self.data)
-        corr_data = get_correlation_matrix_for_instruments(
-            self.data, self._get_configured_duplicates_list(pairs)
-        )
-        corr_data = cluster_correlation_matrix(corr_data)
-        corr_data = corr_data.as_pd().round(2)
+        correlation_error = None
+        try:
+            corr_data = get_correlation_matrix_for_instruments(
+                self.data, self._get_configured_duplicates_list(pairs)
+            )
+            corr_data = cluster_correlation_matrix(corr_data)
+            corr_data = corr_data.as_pd().round(2)
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            self.data.log.warning(
+                "Could not calculate configured duplicate correlations: %s" % str(exc)
+            )
+            corr_data = pd.DataFrame()
+            correlation_error = str(exc)
 
         rows = []
         for inc, exc in pairs:
@@ -337,12 +345,16 @@ class reportingApi(object):
                 corr_value = corr_data.loc[inc, exc]
             except KeyError:
                 corr_value = float("nan")
-            rows.append(dict(included=inc, excluded=exc, correlation=corr_value))
+            row = dict(included=inc, excluded=exc, correlation=corr_value)
+            if correlation_error is not None:
+                row["note"] = "Correlation unavailable: %s" % correlation_error
+            rows.append(row)
 
         configured_correlations = pd.DataFrame(rows)
-        configured_correlations = configured_correlations[
-            configured_correlations.correlation < self._min_correlation
-        ].sort_values("correlation", ascending=False)
+        if correlation_error is None:
+            configured_correlations = configured_correlations[
+                configured_correlations.correlation < self._min_correlation
+            ].sort_values("correlation", ascending=False)
         table_corr = table(
             "Potenially uncorrelated configured duplicates", configured_correlations
         )

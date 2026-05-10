@@ -93,14 +93,44 @@ def get_annualised_stdev_perc_of_instruments(data, instrument_list) -> stdevEsti
 def get_perc_returns_across_instruments(data, instrument_list: list) -> pd.DataFrame:
     perc_returns = dict(
         [
-            (instr, returns)
+            (instr, normalised_returns)
             for instr in instrument_list
-            if len(returns := get_daily_perc_returns_for_risk(data, instr)) > 0
+            if len(
+                normalised_returns := _normalise_returns_index_for_correlation(
+                    get_daily_perc_returns_for_risk(data, instr)
+                )
+            )
+            > 0
         ]
     )
     price_df = pd.DataFrame(perc_returns)
 
     return price_df
+
+
+def _normalise_returns_index_for_correlation(returns: pd.Series) -> pd.Series:
+    """
+    Ensure returns are indexed by datetime before correlation resampling.
+    """
+    if len(returns) == 0:
+        return returns
+
+    if pd.api.types.is_numeric_dtype(returns.index.dtype):
+        return returns.iloc[0:0]
+
+    index_as_datetime = pd.to_datetime(returns.index, errors="coerce")
+    valid_rows = ~index_as_datetime.isna()
+    if not valid_rows.any():
+        return returns.iloc[0:0]
+
+    normalised_returns = returns[valid_rows].copy()
+    normalised_returns.index = pd.DatetimeIndex(
+        index_as_datetime[valid_rows]
+    ).tz_localize(None)
+    normalised_returns = normalised_returns[~normalised_returns.index.duplicated()]
+    normalised_returns = normalised_returns.sort_index()
+
+    return normalised_returns
 
 
 def get_current_annualised_perc_stdev_for_instrument(data, instrument_code) -> float:

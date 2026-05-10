@@ -1,3 +1,5 @@
+import traceback
+
 from syscontrol.run_process import processToRun
 
 from sysdata.data_blob import dataBlob
@@ -42,7 +44,13 @@ class runReport(object):
 
     def run_generic_report(self):
         ## Will be renamed
-        run_report(self.config, data=self.data)
+        try:
+            run_report(self.config, data=self.data)
+        except Exception:  # pylint: disable=broad-exception-caught
+            self.data.log.critical(
+                "Report %s failed with exception:\n%s"
+                % (self.config.title, traceback.format_exc())
+            )
 
 
 if __name__ == "__main__":
